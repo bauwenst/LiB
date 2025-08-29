@@ -18,30 +18,6 @@ class TrieList:
         self.detected = []
         self.relationship = dict()
         self.root['skipgram'] = dict()
- 
-    def insert(self, index, word, note=True):
-        """
-        Inserts a word into the trie.
-        :type word: str
-        :rtype: void
-        """
-        curNode = self.root
-        for c in word:
-            if not c in curNode:
-                curNode[c] = {}
-            curNode = curNode[c]
-
-        if self.word_end in curNode:
-            raise Exception(f'already has "{word}"')
-        else:
-            curNode[self.word_end] = note
-        
-        if index == -1:
-            self.par_list.append(word)
-            self.par_dict[word] = len(self.par_list) - 1
-        else:
-            self.par_list.insert(index, word)
-            par_dict[word] = index
 
     def insert(self, index, word, note=True):
         """
@@ -65,24 +41,10 @@ class TrieList:
             self.par_dict[word] = len(self.par_list) - 1
         else:
             self.par_list.insert(index, word)
-            par_dict[word] = index
+            self.par_dict[word] = index
        
     def append(self, word, note=True):
         self.insert(-1, word, note)
-                
-    def _del(self, word): # delete from the trie and dict
-        # print(word)
-        curNode = self.root
-        def f(word, curNode):
-            if len(word) == 0:
-                del curNode[-1]
-            else:  
-                f(word[1:], curNode[word[0]])
-                if len(curNode[word[0]]) == 0:
-                    del curNode[word[0]]
-
-        f(word, curNode)
-        del self.par_dict[word]
 
     def _del(self, word): # delete from the trie and dict
         # print(word)
@@ -161,11 +123,10 @@ class TrieList:
     def move(self, i, step):
         w = self.par_list[i]
 
-        if step<0 and i!=0:
-            self.par_list[i+step+1: i+1] = self.par_list[i+step: i] 
+        if step < 0 and i != 0:
+            self.par_list[i+step+1: i+1] = self.par_list[i+step: i]
             self.par_list[i+step] = w
             self.par_dict[w] = i + step
-            
         else:
             if i == len(self.par_list)-1:
                 return
@@ -177,16 +138,14 @@ class TrieList:
             self.par_list[i+step] = w
             self.par_dict[w] = i + step
 
-    def move(self, i, step):
+    def move(self, i, step):  # FIXME [TB]: I don't know why there are two different implementations of this method. You tell me which is the right one.
         w = self.par_list[i]
 
-        if step<0:
-            if i!=0:
-                self.par_list[i+step+1: i+1] = self.par_list[i+step: i] 
-                self.par_list[i+step] = w
-                self.par_dict[w] = i + step
-            
-        elif step>0:
+        if step < 0 and i != 0:
+            self.par_list[i+step+1: i+1] = self.par_list[i+step: i]
+            self.par_list[i+step] = w
+            self.par_dict[w] = i + step
+        elif step > 0:
             if i+step<len(self.par_list):
                 self.par_list[i: i+step] = self.par_list[i+1: i+step+1]
                 self.par_list[i+step] = w
@@ -197,7 +156,7 @@ class TrieList:
                 self.detected.append(w)
 
     def group_move(self, words, update_rate):
-        self.update_ind() # make "index_with_prior" works
+        self.update_ind()  # make "index_with_prior" works
 
         offset = 0
         for w, e in words:
@@ -216,35 +175,25 @@ class TrieList:
 
     # def group_move(self, words, update_rate):
     #     self.update_ind() # make "index_with_prior" works
-
     #     offset = 0
-
     #     rewards = Counter([w for w,e in words if e<0])
     #     punishs = Counter([w for w,e in words if e>0])
-
-
+    #
     #     for w, n in rewards.items():
-
-           
     #         if w in self.par_dict:
     #             raw_ind = self.index_with_prior(w, offset)
-
     #             if raw_ind is not None and raw_ind > 0:
-
     #                 step = raw_ind-int(raw_ind * (1-update_rate)**n)   
     #                 self.move(raw_ind, step)
-
+    #
     #     for w, n in punishs.items():
     #         if w in self.par_dict:
     #             raw_ind = self.index_with_prior(w, offset)
-
     #             if raw_ind is not None and raw_ind > 0:
     #                 offset += 1
-
     #                 step = raw_ind-int(raw_ind * (1+update_rate)**n)             
     #                 self.move(raw_ind, step)
-
-        self.update_ind()
+    #    self.update_ind()
     
     def group_remove(self, words):
         if len(words) > 0:
@@ -263,8 +212,7 @@ class TrieList:
             self.update_ind()
 
     def index(self, word):
-        index = self.par_list.index(word)
-        return index
+        return self.par_list.index(word)
 
     def index_with_prior(self, word, offset=0, nothing=False):
         try:
