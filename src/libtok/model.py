@@ -5,7 +5,6 @@ import numpy as np
 import time
 
 from .structures import TrieList
-# memory = TrieList()
 
 
 class LessIsBetter:
@@ -30,27 +29,28 @@ class LessIsBetter:
         self._use_skip = use_skip
 
         self.to_dropout = dict()
+        self.memory = TrieList()
         self.memory_log = []
 
-    def initialise(self, memory, corpus_samples):
+    def initialise(self, corpus_samples):
         self.to_dropout.clear()
         for i in set([i for j in corpus_samples for i in j]):
-            memory.append(i)
+            self.memory.append(i)
             self.to_dropout[i] = self._life
 
     def eval_memorizer(self, doc_covered):
         return (1-sum([i==0 for i in doc_covered])/len(doc_covered),
                 [(key, len(list(group))) for key, group in groupby(doc_covered)])
 
-    def dropout(self, memory, to_test, doc, doc_covered, doc_loc, reward_list, strict=False):
+    def dropout(self, to_test, doc, doc_covered, doc_loc, reward_list, strict=False):
         for chunk_to_test in list(to_test.keys()):
-            if strict and not memory.search(chunk_to_test):
+            if strict and not self.memory.search(chunk_to_test):
                 del to_test[chunk_to_test]
                 continue
 
             onset, end, N_unknowns, N_chunks, chunks_list_0, chunks_list = to_test[chunk_to_test]
             while end < doc_loc:
-                chunk_next = memory.match(doc[end:end+self._max_len])
+                chunk_next = self.memory.match(doc[end:end+self._max_len])
                 chunks_list.append(chunk_next)
                 chunk_size_next = len(chunk_next)
                 if chunk_size_next > 0:
@@ -70,12 +70,12 @@ class LessIsBetter:
                 N_chunks_0 = sum(len(c) > 0 for c in chunks_list_0)
 
                 redundant = N_unknowns_0 == N_unknowns and \
-                              ((N_chunks_0 > N_chunks) or \
-                               (N_chunks_0 == N_chunks and \
-                                    sum(memory.index_with_prior(i) for i in chunks_list_0 if i in memory) > sum(memory.index_with_prior(i) for i in chunks_list if i in memory)))
+                              ((N_chunks_0 > N_chunks) or
+                               (N_chunks_0 == N_chunks and
+                                    sum(self.memory.index_with_prior(i) for i in chunks_list_0 if i in self.memory) > sum(self.memory.index_with_prior(i) for i in chunks_list if i in self.memory)))
 
                 if N_unknowns_0 > N_unknowns or redundant:
-                    smaller_chunk = memory.match(chunk_to_test[:-1])
+                    smaller_chunk = self.memory.match(chunk_to_test[:-1])
                     reward_list.append((chunk_to_test, 1))
                     reward_list.append((smaller_chunk, -1))
                 else:
@@ -86,7 +86,7 @@ class LessIsBetter:
             else:
                 to_test[chunk_to_test] = onset, end, N_unknowns, N_chunks, chunks_list_0, chunks_list
 
-    def batch_update_memory(self, memory, reward_list, used_chunks):
+    def batch_update_memory(self, reward_list, used_chunks):
         to_del = []
         for chunk_to_test in list(self.to_dropout.keys()):
             current_life = self.to_dropout[chunk_to_test]
@@ -97,38 +97,38 @@ class LessIsBetter:
                 self.to_dropout[chunk_to_test] = current_life - 1
 
         for c, label in reward_list:
-            if c in memory.relationship:
+            if c in self.memory.relationship:
     #             print(lable, c,memory.relationship[c])
-                reward_list.append((memory.relationship[c], label))
+                reward_list.append((self.memory.relationship[c], label))
 
-        memory.group_remove(to_del)
+        self.memory.group_remove(to_del)
 
         reward_list = [(w,e) for w,e in reward_list if w not in set(to_del)]
-        memory.group_move(reward_list, self._update_rate)
+        self.memory.group_move(reward_list, self._update_rate)
 
-        forget_samples = range(int((1 - self._memory_out) * len(memory)), len(memory))
+        forget_samples = range(int((1 - self._memory_out) * len(self.memory)), len(self.memory))
 
         for ind in forget_samples:
-            chunk_t = memory[ind]
+            chunk_t = self.memory[ind]
             if chunk_t not in self.to_dropout:
                 self.to_dropout[chunk_t] = self._life
 
-    def memorize(self, memory, to_memorize, to_get, reward_list):
-        if to_get and not memory.search(to_get):
+    def memorize(self, to_memorize, to_get, reward_list):
+        if to_get and not self.memory.search(to_get):
             if to_get in to_memorize:
                 to_memorize.remove(to_get)
-                memory.append(to_get)
+                self.memory.append(to_get)
             else:
                 to_memorize.add(to_get)
 
-    def reading(self, memory, article):
+    def reading(self, article):
         used_chunks = Counter()
 
         doc_covered_all = []
         reward_list = []
         punish_list= []
         to_memorize = set()
-        l_memory_size = len(memory)
+        l_memory_size = len(self.memory)
         new_memorized = Counter()
 
         for sent in article:
@@ -140,9 +140,9 @@ class LessIsBetter:
             sent_covered = [0] * len(sent)
             i = 0
             while i < len(sent):
-                self.dropout(memory, to_test, sent, sent_covered, i, reward_list)
+                self.dropout(to_test, sent, sent_covered, i, reward_list)
 
-                chunk_2nd, chunk = memory.match_two(sent[i: i+self._max_len])
+                chunk_2nd, chunk = self.memory.match_two(sent[i: i+self._max_len])
 
                 for chunk_to_test in list(to_test.keys()):
                     to_test[chunk_to_test][4].append(chunk)
@@ -155,7 +155,7 @@ class LessIsBetter:
                                 to_get = last_chunk[0]
                         elif len(last_chunk[0] + chunk) <= self._max_len:
                             to_get = last_chunk[0] + chunk
-                        self.memorize(memory, to_memorize, to_get, reward_list)
+                        self.memorize(to_memorize, to_get, reward_list)
 
                     if len(chunk) > 1 and len(chunk_2nd) > 0:
                         to_test[chunk] = [i, i + len(chunk_2nd), 0, 1, [chunk], [chunk_2nd]] # chunk_to_test, start position, current position, number of unknowns, number of chunks
@@ -180,31 +180,31 @@ class LessIsBetter:
                 chunks_in_sent = ['[bos]'] + chunks_in_sent + ['[eos]']
                 for a,b in zip(chunks_in_sent[:-2], chunks_in_sent[2:]):
                     if random.random() < (self._memory_in * self._memory_in):
-                        self.memorize(memory, to_memorize, ('skipgram', a,b), reward_list)
+                        self.memorize(to_memorize, ('skipgram', a,b), reward_list)
 
                 while True:
-                    skip_gram, skip, chunks_in_sent = memory.skipgram_match(chunks_in_sent)
+                    skip_gram, skip, chunks_in_sent = self.memory.skipgram_match(chunks_in_sent)
                     if skip is not None and len(skip) > 1:
                         skip = ''.join(skip)
     #                     if (len(skip) < 8):print(skip)
                         if (len(skip) <= self._mini_gap) and (random.random() < self._memory_in):
         #                     memorize(memory, to_memorize, skip, reward_list)
-                            if not memory.search(skip):
-                                memory.relationship[skip] = ('skipgram', *skip_gram)
-                                memory.append(skip)
+                            if not self.memory.search(skip):
+                                self.memory.relationship[skip] = ('skipgram', *skip_gram)
+                                self.memory.append(skip)
                     if chunks_in_sent == None:
                         break
 
             doc_covered_all += sent_covered
 
-        in_count = len(memory) - l_memory_size
+        in_count = len(self.memory) - l_memory_size
 
-        self.batch_update_memory(memory, reward_list, used_chunks)
+        self.batch_update_memory(reward_list, used_chunks)
 
         covered_rate, chunk_groups = self.eval_memorizer(doc_covered_all)
         chunk_in_use = sum([g_len if key==0 else 1 for key, g_len in chunk_groups])
 
-        mem_usage = len(set(used_chunks.keys()) & set(memory))/len(memory)
+        mem_usage = len(set(used_chunks.keys()) & set(self.memory))/len(self.memory)
 
         return covered_rate, len(doc_covered_all)/chunk_in_use, mem_usage, in_count
 
@@ -230,31 +230,31 @@ class LessIsBetter:
         f1 = 2 * pre * rec / (pre + rec)
         return pre, rec, f1
 
-    def run(self, epoch_id, memory, corpus_train, corpus_test):
+    def run(self, epoch_id, corpus_train, corpus_test):
         article_whole, article_raw_whole = random.choice(corpus_train)
         article, article_raw = article_whole, article_raw_whole
 
-        covered_rate, avg_chunk_len, mem_usage, in_count = self.reading(memory, article)
+        covered_rate, avg_chunk_len, mem_usage, in_count = self.reading(article)
 
     #     memory_log.append([time.time(), memory.par_list.copy()])
 
         if epoch_id % 100 == 0:
             scores_hist = dict()
             self.record_scores(scores_hist,
-                      {'MemLength':len(memory),
+                      {'MemLength':len(self.memory),
                        'Covered':covered_rate,
                        'MemUsage':mem_usage})
 
             for article, article_raw in corpus_test:
                 chunk_pos_0 = set(accumulate([len(c) for sent in article_raw for c in sent]))
 
-                chunk_pos = self.show_reading(memory, article, decompose=True)
+                chunk_pos = self.show_reading(article, decompose=True)
                 precision_1 = len(chunk_pos_0&chunk_pos)/len(chunk_pos)
                 recall_1 = len(chunk_pos_0&chunk_pos)/len(chunk_pos_0)
 
                 chunks_0 = [[c for c in sent] for sent in article_raw]
 
-                chunks = self.show_reading(memory, article, return_chunks=True, comb_sents=False, decompose=True)
+                chunks = self.show_reading(article, return_chunks=True, comb_sents=False, decompose=True)
                 precision_2, recall_2, f1_2 = self.get_f1(chunks_0, chunks)
 
                 self.record_scores(scores_hist,
@@ -267,51 +267,50 @@ class LessIsBetter:
                 scores_hist,
                 ['MemLength','Covered','MemUsage','precision_1','recall_1','precision_2','recall_2']
             )
-            self.memory_log.append([time.time(), 2*precision_2*recall_2/(precision_2+recall_2),len(memory)])
+            self.memory_log.append([time.time(), 2*precision_2*recall_2/(precision_2+recall_2),len(self.memory)])
 
             print(f'{epoch_id}\t  MemLength: {int(mem_length)}')
     #          B: {math.log(MemLength)/avg_chunk_len_1:.3f}
     #         print()
     #         print(f'Precision: {precision_0*100:.2f}% \t Recall: {recall_0*100:.2f}% \t F1: {2*precision_0*recall_0/(precision_0+recall_0)*100:.2f}%')
-
     #         print(f'Chunk_len: {avg_chunk_len_1:.1f} \t Word_len: {avg_chunk_len_2:.1f} \t',end='')
             print(f'[B] Precision: {precision_1*100:.2f}% \t Recall: {recall_1*100:.2f}% \t F1: {2*precision_1*recall_1/(precision_1+recall_1)*100:.2f}%')
             print(f'[L] Precision: {precision_2*100:.2f}% \t Recall: {recall_2*100:.2f}% \t F1: {2*precision_2*recall_2/(precision_2+recall_2)*100:.2f}%')
             print()
 
-    def find_subs(self, memory, large_chunk, level=2):
+    def find_subs(self, large_chunk, level=2):
         chunk_1 = large_chunk
 
         subs = []
         while True:
-            chunk_1 = memory.match(chunk_1[:-1])
+            chunk_1 = self.memory.match(chunk_1[:-1])
             chunk_2 = large_chunk[len(chunk_1):]
 
-            if chunk_1!='' and chunk_2 in memory:
-                subs.append((chunk_1, chunk_2, (memory.index_with_prior(chunk_1), memory.index_with_prior(chunk_2))))
+            if chunk_1!='' and chunk_2 in self.memory:
+                subs.append((chunk_1, chunk_2, (self.memory.index_with_prior(chunk_1), self.memory.index_with_prior(chunk_2))))
             if len(chunk_1) <= 1:
                 break
 
         if len(subs) > 0:
             sub = sorted(subs, key=lambda x:x[2])[0]
-            if max(sub[2]) < memory.index_with_prior(large_chunk, nothing=len(memory)):
+            if max(sub[2]) < self.memory.index_with_prior(large_chunk, nothing=len(self.memory)):
                 if level == 1:
                     return sub[:2]
                 else:
-                    return self.find_subs(memory, sub[0], level-1) + self.find_subs(memory, sub[1], level-1)
+                    return self.find_subs(sub[0], level-1) + self.find_subs(sub[1], level-1)
             else:
                 return (large_chunk,)
         else:
             return (large_chunk,)
 
-    def show_reading(self, memory, article, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):
+    def show_reading(self, article, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):
         chunks = []
 
         for sent in article:
             sent_chunks = []
             i = 0
             while i < len(sent):
-                chunk_2nd, chunk = memory.match_two(sent[i: i+max_len])
+                chunk_2nd, chunk = self.memory.match_two(sent[i: i+max_len])
                 if len(chunk) > 0:
 
                     if len(chunk) > 1 and len(chunk_2nd) > 0:
@@ -322,7 +321,7 @@ class LessIsBetter:
 
                         while end_0 != end:
                             if end_0 > end:
-                                next_chunk = memory.match(sent[end: end+max_len])
+                                next_chunk = self.memory.match(sent[end: end+max_len])
                                 chunk_size_next = len(next_chunk)
                                 if chunk_size_next > 0:
                                     end += chunk_size_next
@@ -335,7 +334,7 @@ class LessIsBetter:
                                     chunks_t.append(sent[end-1])
 
                             elif end_0 < end:
-                                next_chunk = memory.match(sent[end_0: end_0+max_len])
+                                next_chunk = self.memory.match(sent[end_0: end_0+max_len])
                                 chunk_size_next = len(next_chunk)
                                 if chunk_size_next > 0:
                                     end_0 += chunk_size_next
@@ -349,10 +348,10 @@ class LessIsBetter:
                                     chunks_t_0.append(sent[end_0-1])
 
                         redundant = N_unknowns_0 == N_unknowns and \
-                                  ((N_chunks_0 > N_chunks) or \
-                                   (N_chunks_0 == N_chunks and \
-                                        sum(memory.index_with_prior(i, nothing=len(memory)) for i in chunks_t_0) > \
-                                        sum(memory.index_with_prior(i, nothing=len(memory)) for i in chunks_t)))
+                                  ((N_chunks_0 > N_chunks) or
+                                   (N_chunks_0 == N_chunks and
+                                        sum(self.memory.index_with_prior(i, nothing=len(self.memory)) for i in chunks_t_0) >
+                                        sum(self.memory.index_with_prior(i, nothing=len(self.memory)) for i in chunks_t)))
 
                         if N_unknowns_0 > N_unknowns or redundant:
                             sent_chunks += chunks_t
@@ -371,7 +370,7 @@ class LessIsBetter:
             chunks.append(sent_chunks)
 
         if decompose:
-            chunks = [[sub_c for c in sent for sub_c in self.find_subs(memory,c)] for sent in chunks]
+            chunks = [[sub_c for c in sent for sub_c in self.find_subs(c)] for sent in chunks]
 
         if comb_sents:
             chunks = [c for sent in chunks for c in sent]
@@ -387,14 +386,14 @@ class LessIsBetter:
         else:
             return set(accumulate([len(c) for c in chunks]))
 
-    def show_reading(self, memory, article, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):
+    def show_reading(self, article, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):  # FIXME [TB]: Another duplicate method implement.
         chunks = []
 
         for sent in article:
             sent_chunks = []
             i = 0
             while i < len(sent):
-                chunk_2nd, chunk = memory.match_two(sent[i: i+max_len])
+                chunk_2nd, chunk = self.memory.match_two(sent[i: i+max_len])
                 if len(chunk) > 0:
 
                     sent_chunks.append(chunk)
@@ -406,7 +405,7 @@ class LessIsBetter:
             chunks.append(sent_chunks)
 
         if decompose:
-            chunks = [[sub_c for c in sent for sub_c in self.find_subs(memory,c)] for sent in chunks]
+            chunks = [[sub_c for c in sent for sub_c in self.find_subs(c)] for sent in chunks]
 
         if comb_sents:
             chunks = [c for sent in chunks for c in sent]
@@ -422,8 +421,8 @@ class LessIsBetter:
         else:
             return set(accumulate([len(c) for c in chunks]))
 
-    def show_result(self, memory, article_raw, article, decompose=False):
-        chunk_pos = self.show_reading(memory, article, decompose=decompose)
+    def show_result(self, article_raw, article, decompose=False):
+        chunk_pos = self.show_reading(article, decompose=decompose)
         chunk_pos_0 = set(accumulate([len(c) for sent in article_raw for c in sent]))
 
 
@@ -453,7 +452,7 @@ class LessIsBetter:
                 i += 1
                 j += 1
 
-    def demo(self, article_raw, article, memory, decompose=False, section=(0,-1)):
+    def demo(self, article_raw, article, decompose=False, section=(0,-1)):
         onset, end = section
         count = 0
         for chunk_i in range(999):
@@ -464,10 +463,10 @@ class LessIsBetter:
 
             count += len(article_raw[chunk_i])
 
-        self.show_result(memory, article_raw[chunk_i_0: chunk_i], article[onset:end], decompose=decompose)
+        self.show_result(article_raw[chunk_i_0:chunk_i], article[onset:end], decompose=decompose)
 
-    def show_result_with_idx(self, memory, article_raw, article, decompose=False):
-        chunk_pos = self.show_reading(memory, article, decompose=decompose)
+    def show_result_with_idx(self, article_raw, article, decompose=False):
+        chunk_pos = self.show_reading(article, decompose=decompose)
         chunk_pos_0 = set(accumulate([len(c) for sent in article_raw for c in sent]))
 
         doc = ''.join(article)
@@ -485,11 +484,11 @@ class LessIsBetter:
             chunk_i = doc[chunk_pos_0[i-1]: chunk_pos_0[i]]
             chunk_j = doc[chunk_pos[j-1]: chunk_pos[j]]
             try:
-                chunk_i_idx = memory.index_with_prior(chunk_i)
+                chunk_i_idx = self.memory.index_with_prior(chunk_i)
             except:
                 chunk_i_idx = '___'
             try:
-                chunk_j_idx = memory.index_with_prior(chunk_j)
+                chunk_j_idx = self.memory.index_with_prior(chunk_j)
             except:
                 chunk_j_idx = '___'
             if chunk_pos_0[i] < chunk_pos[j]:
