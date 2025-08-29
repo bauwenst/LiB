@@ -3,6 +3,7 @@ from collections import Counter
 import numpy as np
 import numba
 
+
 class TrieList:
     word_end = -1
 

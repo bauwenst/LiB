@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "libtok"
+version = "1.0.0"
+requires-python = ">= 3.9"
+authors = [
+    {name = "Jinbiao Yang", email = "jinbiao.yang@mpi.nl"},
+    {name = "Thomas Bauwens", email = "thomas.bauwens@kuleuven.be"},
+]
+maintainers = [
+    {name = "Thomas Bauwens", email = "thomas.bauwens@kuleuven.be"}
+]
+description = "Less is Better: a cognitively inspired unsupervised model for language segmentation."
+readme = "README.md"
+keywords = ["NLP", "tokenizers", "tokenization", "subwords", "segmentation", "natural language", "pickybpe"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research"
+]
+dependencies = [
+    "numpy",
+    "numba"
+]

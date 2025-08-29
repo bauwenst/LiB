@@ -1,14 +1,10 @@
 from collections import Counter
 from itertools import accumulate,groupby
 import random
-import time
-import math
-import importlib
 import numpy as np
-import structures
+import time
 
-importlib.reload(structures)
-TrieList = structures.TrieList
+from .structures import TrieList
 # memory = TrieList()
 
 life = 10
@@ -218,7 +214,7 @@ def get_f1(gold, est):
     f1 = 2 * pre * rec / (pre + rec)
     return pre, rec, f1
 
-import time
+
 memory_log = []
 def run(epoch_id, memory, corpus_train, corpus_test):
 
