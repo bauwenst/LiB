@@ -18,22 +18,30 @@ class LiBCore:
         memory_out: float = 0.0001,
         update_rate: float = 0.2,
         mini_gap: int = 2,
-        use_skip: bool = False,
-        to_dropout: dict = dict()
+        use_skip: bool = False
     ):
-        pass
+        self._life = life
+        self._max_len = max_len
+        self._memory_in = memory_in
+        self._memory_out = memory_out
+        self._update_rate = update_rate
+        self._mini_gap = mini_gap
+        self._use_skip = use_skip
 
-    def init(memory, corpus_samples):
-        to_dropout.clear()
+        self.to_dropout = dict()
+        self.memory_log = []
+
+    def initialise(self, memory, corpus_samples):
+        self.to_dropout.clear()
         for i in set([i for j in corpus_samples for i in j]):
             memory.append(i)
-            to_dropout[i] = life
+            self.to_dropout[i] = self._life
 
-    def eval_memorizer(doc_covered):
+    def eval_memorizer(self, doc_covered):
         return (1-sum([i==0 for i in doc_covered])/len(doc_covered),
                 [(key, len(list(group))) for key, group in groupby(doc_covered)])
 
-    def dropout(memory, to_test, doc, doc_covered, doc_loc, reward_list, strict=False):
+    def dropout(self, memory, to_test, doc, doc_covered, doc_loc, reward_list, strict=False):
         for chunk_to_test in list(to_test.keys()):
             if strict and not memory.search(chunk_to_test):
                 del to_test[chunk_to_test]
@@ -41,7 +49,7 @@ class LiBCore:
 
             onset, end, N_unknowns, N_chunks, chunks_list_0, chunks_list = to_test[chunk_to_test]
             while end < doc_loc:
-                chunk_next = memory.match(doc[end: end+max_len])
+                chunk_next = memory.match(doc[end:end+self._max_len])
                 chunks_list.append(chunk_next)
                 chunk_size_next = len(chunk_next)
                 if chunk_size_next > 0:
@@ -72,20 +80,20 @@ class LiBCore:
                 else:
                     reward_list.append((chunk_to_test, -1))
 
-                    if chunk_to_test in to_dropout:
-                        del to_dropout[chunk_to_test]
+                    if chunk_to_test in self.to_dropout:
+                        del self.to_dropout[chunk_to_test]
             else:
                 to_test[chunk_to_test] = onset, end, N_unknowns, N_chunks, chunks_list_0, chunks_list
 
-    def batch_update_memory(memory, reward_list, used_chunks):
+    def batch_update_memory(self, memory, reward_list, used_chunks):
         to_del = []
-        for chunk_to_test in list(to_dropout.keys()):
-            current_life = to_dropout[chunk_to_test]
+        for chunk_to_test in list(self.to_dropout.keys()):
+            current_life = self.to_dropout[chunk_to_test]
             if current_life <= 1:
-                del to_dropout[chunk_to_test]
+                del self.to_dropout[chunk_to_test]
                 to_del.append(chunk_to_test)
             else:
-                to_dropout[chunk_to_test] = current_life - 1
+                self.to_dropout[chunk_to_test] = current_life - 1
 
         for c, label in reward_list:
             if c in memory.relationship:
@@ -95,16 +103,16 @@ class LiBCore:
         memory.group_remove(to_del)
 
         reward_list = [(w,e) for w,e in reward_list if w not in set(to_del)]
-        memory.group_move(reward_list, update_rate)
+        memory.group_move(reward_list, self._update_rate)
 
-        forget_samples = range(int((1-memory_out)*len(memory)), len(memory))
+        forget_samples = range(int((1 - self._memory_out) * len(memory)), len(memory))
 
         for ind in forget_samples:
             chunk_t = memory[ind]
-            if chunk_t not in to_dropout:
-                to_dropout[chunk_t] = life
+            if chunk_t not in self.to_dropout:
+                self.to_dropout[chunk_t] = self._life
 
-    def memorize(memory, to_memorize, to_get, reward_list):
+    def memorize(self, memory, to_memorize, to_get, reward_list):
         if to_get and not memory.search(to_get):
             if to_get in to_memorize:
                 to_memorize.remove(to_get)
@@ -112,7 +120,7 @@ class LiBCore:
             else:
                 to_memorize.add(to_get)
 
-    def reading(memory, article):
+    def reading(self, memory, article):
         used_chunks = Counter()
 
         doc_covered_all = []
@@ -131,27 +139,27 @@ class LiBCore:
             sent_covered = [0] * len(sent)
             i = 0
             while i < len(sent):
-                dropout(memory, to_test, sent, sent_covered, i, reward_list)
+                self.dropout(memory, to_test, sent, sent_covered, i, reward_list)
 
-                chunk_2nd, chunk = memory.match_two(sent[i: i+max_len])
+                chunk_2nd, chunk = memory.match_two(sent[i: i+self._max_len])
 
                 for chunk_to_test in list(to_test.keys()):
                     to_test[chunk_to_test][4].append(chunk)
 
                 if len(chunk) > 0:
-                    if (len(last_chunk) + len(chunk) <= max_len) and (random.random() < memory_in):
+                    if (len(last_chunk) + len(chunk) <= self._max_len) and (random.random() < self._memory_in):
                         to_get = None
                         if last_chunk[1] == 0:
-                            if 0 < len(last_chunk[0]) <= mini_gap:
+                            if 0 < len(last_chunk[0]) <= self._mini_gap:
                                 to_get = last_chunk[0]
-                        elif len(last_chunk[0] + chunk) <= max_len:
+                        elif len(last_chunk[0] + chunk) <= self._max_len:
                             to_get = last_chunk[0] + chunk
-                        memorize(memory, to_memorize, to_get, reward_list)
+                        self.memorize(memory, to_memorize, to_get, reward_list)
 
                     if len(chunk) > 1 and len(chunk_2nd) > 0:
                         to_test[chunk] = [i, i + len(chunk_2nd), 0, 1, [chunk], [chunk_2nd]] # chunk_to_test, start position, current position, number of unknowns, number of chunks
-                    elif chunk in to_dropout:
-                        del to_dropout[chunk]
+                    elif chunk in self.to_dropout:
+                        del self.to_dropout[chunk]
 
                     chunk_s = len(chunk)
                     sent_covered[i: i + chunk_s] = [sent_covered[i-1] + 1] * chunk_s
@@ -167,18 +175,18 @@ class LiBCore:
                     chunks_in_sent.append(sent[i])
                     i += 1
 
-            if use_skip:
+            if self._use_skip:
                 chunks_in_sent = ['[bos]'] + chunks_in_sent + ['[eos]']
                 for a,b in zip(chunks_in_sent[:-2], chunks_in_sent[2:]):
-                    if random.random() < (memory_in*memory_in):
-                        memorize(memory, to_memorize, ('skipgram', a,b), reward_list)
+                    if random.random() < (self._memory_in * self._memory_in):
+                        self.memorize(memory, to_memorize, ('skipgram', a,b), reward_list)
 
                 while 1:
                     skip_gram, skip, chunks_in_sent = memory.skipgram_match(chunks_in_sent)
                     if skip is not None and len(skip) > 1:
                         skip = ''.join(skip)
     #                     if (len(skip) < 8):print(skip)
-                        if (len(skip) <= mini_gap) and (random.random() < memory_in):
+                        if (len(skip) <= self._mini_gap) and (random.random() < self._memory_in):
         #                     memorize(memory, to_memorize, skip, reward_list)
                             if not memory.search(skip):
                                 memory.relationship[skip] = ('skipgram', *skip_gram)
@@ -190,51 +198,48 @@ class LiBCore:
 
         in_count = len(memory) - l_memory_size
 
-        batch_update_memory(memory, reward_list, used_chunks)
+        self.batch_update_memory(memory, reward_list, used_chunks)
 
-        covered_rate, chunk_groups = eval_memorizer(doc_covered_all)
+        covered_rate, chunk_groups = self.eval_memorizer(doc_covered_all)
         chunk_in_use = sum([g_len if key==0 else 1 for key, g_len in chunk_groups])
 
         mem_usage = len(set(used_chunks.keys()) & set(memory))/len(memory)
 
         return covered_rate, len(doc_covered_all)/chunk_in_use, mem_usage, in_count
 
-    def record_scores(scores_hist, scores):
+    def record_scores(self, scores_hist, scores):
         for k,v in scores.items():
             if k not in scores_hist:
                 scores_hist[k] = []
 
             scores_hist[k].append(v)
 
-    def ouput_scores(scores_hist, items):
+    def output_scores(self, scores_hist, items):
         return [np.mean(scores_hist[k]) for k in items]
 
-    def get_f1(gold, est):
+    def get_f1(self, references, candidates):
         gold_chunk = est_chunk = correct_chunk = 0
-        for goldSent,estSent in zip(gold, est):
-            gold_chunk += len(goldSent)
-            est_chunk += len(estSent)
-            goldChunkSet = set(goldSent)
-            correct_chunk += sum(im in goldChunkSet for im in estSent)
+        for gold_sentence, estimated_sentence in zip(references, candidates):
+            gold_chunk += len(gold_sentence)
+            est_chunk += len(estimated_sentence)
+            gold_chunk_set = set(gold_sentence)
+            correct_chunk += sum(im in gold_chunk_set for im in estimated_sentence)
         pre = correct_chunk / est_chunk
         rec = correct_chunk / gold_chunk
         f1 = 2 * pre * rec / (pre + rec)
         return pre, rec, f1
 
-
-    memory_log = []
-    def run(epoch_id, memory, corpus_train, corpus_test):
-
+    def run(self, epoch_id, memory, corpus_train, corpus_test):
         article_whole, article_raw_whole = random.choice(corpus_train)
         article, article_raw = article_whole, article_raw_whole
 
-        covered_rate, avg_chunk_len, mem_usage, in_count = reading(memory, article)
+        covered_rate, avg_chunk_len, mem_usage, in_count = self.reading(memory, article)
 
     #     memory_log.append([time.time(), memory.par_list.copy()])
 
         if epoch_id % 100 == 0:
             scores_hist = dict()
-            record_scores(scores_hist,
+            self.record_scores(scores_hist,
                       {'MemLength':len(memory),
                        'Covered':covered_rate,
                        'MemUsage':mem_usage})
@@ -242,26 +247,28 @@ class LiBCore:
             for article, article_raw in corpus_test:
                 chunk_pos_0 = set(accumulate([len(c) for sent in article_raw for c in sent]))
 
-                chunk_pos = show_reading(memory, article, decompose=True)
+                chunk_pos = self.show_reading(memory, article, decompose=True)
                 precision_1 = len(chunk_pos_0&chunk_pos)/len(chunk_pos)
                 recall_1 = len(chunk_pos_0&chunk_pos)/len(chunk_pos_0)
 
                 chunks_0 = [[c for c in sent] for sent in article_raw]
 
-                chunks = show_reading(memory, article, return_chunks=True, comb_sents=False, decompose=True)
-                precision_2, recall_2, f1_2 = get_f1(chunks_0, chunks)
+                chunks = self.show_reading(memory, article, return_chunks=True, comb_sents=False, decompose=True)
+                precision_2, recall_2, f1_2 = self.get_f1(chunks_0, chunks)
 
-                record_scores(scores_hist,
+                self.record_scores(scores_hist,
                               {'precision_1':precision_1,
                                'recall_1':recall_1,
                                'precision_2':precision_2,
                                'recall_2':recall_2,})
 
-            MemLength,Covered,MemUsage,precision_1,recall_1,precision_2,recall_2 = ouput_scores(scores_hist,
-                                                                                             ['MemLength','Covered','MemUsage','precision_1','recall_1','precision_2','recall_2'])
-            memory_log.append([time.time(), 2*precision_2*recall_2/(precision_2+recall_2),len(memory)])
+            mem_length,covered,mem_usage,precision_1,recall_1,precision_2,recall_2 = self.output_scores(
+                scores_hist,
+                ['MemLength','Covered','MemUsage','precision_1','recall_1','precision_2','recall_2']
+            )
+            self.memory_log.append([time.time(), 2*precision_2*recall_2/(precision_2+recall_2),len(memory)])
 
-            print(f'{epoch_id}\t  MemLength: {int(MemLength)}')
+            print(f'{epoch_id}\t  MemLength: {int(mem_length)}')
     #          B: {math.log(MemLength)/avg_chunk_len_1:.3f}
     #         print()
     #         print(f'Precision: {precision_0*100:.2f}% \t Recall: {recall_0*100:.2f}% \t F1: {2*precision_0*recall_0/(precision_0+recall_0)*100:.2f}%')
@@ -271,8 +278,7 @@ class LiBCore:
             print(f'[L] Precision: {precision_2*100:.2f}% \t Recall: {recall_2*100:.2f}% \t F1: {2*precision_2*recall_2/(precision_2+recall_2)*100:.2f}%')
             print()
 
-
-    def find_subs(memory, large_chunk, level=2):
+    def find_subs(self, memory, large_chunk, level=2):
         chunk_1 = large_chunk
 
         subs = []
@@ -291,13 +297,13 @@ class LiBCore:
                 if level == 1:
                     return sub[:2]
                 else:
-                    return find_subs(memory, sub[0], level-1) + find_subs(memory, sub[1], level-1)
+                    return self.find_subs(memory, sub[0], level-1) + self.find_subs(memory, sub[1], level-1)
             else:
                 return (large_chunk,)
         else:
             return (large_chunk,)
 
-    def show_reading(memory, article, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):
+    def show_reading(self, memory, article, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):
         chunks = []
 
         for sent in article:
@@ -364,7 +370,7 @@ class LiBCore:
             chunks.append(sent_chunks)
 
         if decompose:
-            chunks = [[sub_c for c in sent for sub_c in find_subs(memory,c)] for sent in chunks]
+            chunks = [[sub_c for c in sent for sub_c in self.find_subs(memory,c)] for sent in chunks]
 
         if comb_sents:
             chunks = [c for sent in chunks for c in sent]
@@ -380,7 +386,7 @@ class LiBCore:
         else:
             return set(accumulate([len(c) for c in chunks]))
 
-    def show_reading(memory, article, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):
+    def show_reading(self, memory, article, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):
         chunks = []
 
         for sent in article:
@@ -399,7 +405,7 @@ class LiBCore:
             chunks.append(sent_chunks)
 
         if decompose:
-            chunks = [[sub_c for c in sent for sub_c in find_subs(memory,c)] for sent in chunks]
+            chunks = [[sub_c for c in sent for sub_c in self.find_subs(memory,c)] for sent in chunks]
 
         if comb_sents:
             chunks = [c for sent in chunks for c in sent]
@@ -415,8 +421,8 @@ class LiBCore:
         else:
             return set(accumulate([len(c) for c in chunks]))
 
-    def show_result(memory, article_raw, article, decompose=False):
-        chunk_pos = show_reading(memory, article, decompose=decompose)
+    def show_result(self, memory, article_raw, article, decompose=False):
+        chunk_pos = self.show_reading(memory, article, decompose=decompose)
         chunk_pos_0 = set(accumulate([len(c) for sent in article_raw for c in sent]))
 
 
@@ -446,7 +452,7 @@ class LiBCore:
                 i += 1
                 j += 1
 
-    def demo(article_raw, article, memory, decompose=False, section=(0,-1)):
+    def demo(self, article_raw, article, memory, decompose=False, section=(0,-1)):
         onset, end = section
         count = 0
         for chunk_i in range(999):
@@ -457,12 +463,11 @@ class LiBCore:
 
             count += len(article_raw[chunk_i])
 
-        show_result(memory, article_raw[chunk_i_0: chunk_i], article[onset:end], decompose=decompose)
+        self.show_result(memory, article_raw[chunk_i_0: chunk_i], article[onset:end], decompose=decompose)
 
-    def show_result_with_idx(memory, article_raw, article, decompose=False):
-        chunk_pos = show_reading(memory, article, decompose=decompose)
+    def show_result_with_idx(self, memory, article_raw, article, decompose=False):
+        chunk_pos = self.show_reading(memory, article, decompose=decompose)
         chunk_pos_0 = set(accumulate([len(c) for sent in article_raw for c in sent]))
-
 
         doc = ''.join(article)
         chunk_pos_0, chunk_pos = [0] + sorted(chunk_pos_0), [0] + sorted(chunk_pos)
