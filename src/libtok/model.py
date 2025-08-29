@@ -1,5 +1,7 @@
+from dataclasses import dataclass
+
 from collections import Counter
-from itertools import accumulate,groupby
+from itertools import accumulate, groupby
 import random
 import numpy as np
 import time
@@ -208,16 +210,6 @@ class LessIsBetter:
 
         return covered_rate, len(doc_covered_all)/chunk_in_use, mem_usage, in_count
 
-    def record_scores(self, scores_hist, scores):
-        for k,v in scores.items():
-            if k not in scores_hist:
-                scores_hist[k] = []
-
-            scores_hist[k].append(v)
-
-    def output_scores(self, scores_hist, items):
-        return [np.mean(scores_hist[k]) for k in items]
-
     def get_f1(self, references, candidates):
         gold_chunk = est_chunk = correct_chunk = 0
         for gold_sentence, estimated_sentence in zip(references, candidates):
@@ -230,20 +222,34 @@ class LessIsBetter:
         f1 = 2 * pre * rec / (pre + rec)
         return pre, rec, f1
 
-    def run(self, epoch_id, corpus_train, corpus_test):
+    def run(self, epochs: int, corpus_train, corpus_test):
+        for epoch_id in range(epochs):
+            self.training_step(epoch_id, corpus_train, corpus_test)
+
+    def training_step(self, epoch_id: int, corpus_train, corpus_test):
         article_whole, article_raw_whole = random.choice(corpus_train)
         article, article_raw = article_whole, article_raw_whole
 
         covered_rate, avg_chunk_len, mem_usage, in_count = self.reading(article)
-
     #     memory_log.append([time.time(), memory.par_list.copy()])
 
+        # Every 100 epochs, you run validation-set statistics.
         if epoch_id % 100 == 0:
-            scores_hist = dict()
-            self.record_scores(scores_hist,
-                      {'MemLength':len(self.memory),
-                       'Covered':covered_rate,
-                       'MemUsage':mem_usage})
+            @dataclass
+            class ValidationStats:
+                mem_length: list[int]
+                covered: list[float]
+                mem_usage: list[float]
+
+                pr1: list[float]
+                re1: list[float]
+                pr2: list[float]
+                re2: list[float]
+
+            stats = ValidationStats([], [], [], [], [], [], [])
+            stats.mem_length.append(len(self.memory))
+            stats.covered.append(covered_rate)
+            stats.mem_usage.append(mem_usage)
 
             for article, article_raw in corpus_test:
                 chunk_pos_0 = set(accumulate([len(c) for sent in article_raw for c in sent]))
@@ -257,19 +263,15 @@ class LessIsBetter:
                 chunks = self.show_reading(article, return_chunks=True, comb_sents=False, decompose=True)
                 precision_2, recall_2, f1_2 = self.get_f1(chunks_0, chunks)
 
-                self.record_scores(scores_hist,
-                              {'precision_1':precision_1,
-                               'recall_1':recall_1,
-                               'precision_2':precision_2,
-                               'recall_2':recall_2,})
+                stats.pr1.append(precision_1)
+                stats.re1.append(recall_1)
+                stats.pr2.append(precision_2)
+                stats.re2.append(recall_2)
 
-            mem_length,covered,mem_usage,precision_1,recall_1,precision_2,recall_2 = self.output_scores(
-                scores_hist,
-                ['MemLength','Covered','MemUsage','precision_1','recall_1','precision_2','recall_2']
-            )
+            precision_1, recall_1, precision_2, recall_2 = float(np.mean(stats.pr1)), float(np.mean(stats.re1)), float(np.mean(stats.pr2)), float(np.mean(stats.re2))
             self.memory_log.append([time.time(), 2*precision_2*recall_2/(precision_2+recall_2),len(self.memory)])
 
-            print(f'{epoch_id}\t  MemLength: {int(mem_length)}')
+            print(f'{epoch_id}\t  MemLength: {int(np.mean(stats.mem_length))}')
     #          B: {math.log(MemLength)/avg_chunk_len_1:.3f}
     #         print()
     #         print(f'Precision: {precision_0*100:.2f}% \t Recall: {recall_0*100:.2f}% \t F1: {2*precision_0*recall_0/(precision_0+recall_0)*100:.2f}%')
