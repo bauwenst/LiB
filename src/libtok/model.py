@@ -7,7 +7,8 @@ import time
 from .structures import TrieList
 # memory = TrieList()
 
-class LiBCore:
+
+class LessIsBetter:
 
     def __init__(
         self,
@@ -181,7 +182,7 @@ class LiBCore:
                     if random.random() < (self._memory_in * self._memory_in):
                         self.memorize(memory, to_memorize, ('skipgram', a,b), reward_list)
 
-                while 1:
+                while True:
                     skip_gram, skip, chunks_in_sent = memory.skipgram_match(chunks_in_sent)
                     if skip is not None and len(skip) > 1:
                         skip = ''.join(skip)
@@ -282,7 +283,7 @@ class LiBCore:
         chunk_1 = large_chunk
 
         subs = []
-        while 1:
+        while True:
             chunk_1 = memory.match(chunk_1[:-1])
             chunk_2 = large_chunk[len(chunk_1):]
 
