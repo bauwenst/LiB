@@ -6,7 +6,7 @@ import random
 import numpy as np
 import time
 
-from .structures import TrieList
+from .structures import TrieList, Corpus, Document
 
 
 class LessIsBetter:
@@ -123,7 +123,7 @@ class LessIsBetter:
             else:
                 to_memorize.add(to_get)
 
-    def reading(self, article):
+    def reading(self, article: Document):
         used_chunks = Counter()
 
         doc_covered_all = []
@@ -133,24 +133,26 @@ class LessIsBetter:
         l_memory_size = len(self.memory)
         new_memorized = Counter()
 
-        for sent in article:
+        for sentence in article.sentences:
+            concatenated_sentence = sentence.cat()
+
             chunks_in_sent = []
             singles = []
             to_test = dict()
             last_chunk = ['', 0] # 0 unknown, 1 known
 
-            sent_covered = [0] * len(sent)
+            sent_covered = [0] * len(concatenated_sentence)
             i = 0
-            while i < len(sent):
-                self.dropout(to_test, sent, sent_covered, i, reward_list)
+            while i < len(concatenated_sentence):
+                self.dropout(to_test, concatenated_sentence, sent_covered, i, reward_list)
 
-                chunk_2nd, chunk = self.memory.match_two(sent[i: i+self._max_len])
+                chunk_2nd, chunk = self.memory.match_two(concatenated_sentence[i:i+self._max_len])
 
                 for chunk_to_test in list(to_test.keys()):
                     to_test[chunk_to_test][4].append(chunk)
 
                 if len(chunk) > 0:
-                    if (len(last_chunk) + len(chunk) <= self._max_len) and (random.random() < self._memory_in):
+                    if len(last_chunk) + len(chunk) <= self._max_len and random.random() < self._memory_in:
                         to_get = None
                         if last_chunk[1] == 0:
                             if 0 < len(last_chunk[0]) <= self._mini_gap:
@@ -170,12 +172,11 @@ class LessIsBetter:
                     i += chunk_s
                     last_chunk = [chunk, 1]
                     used_chunks[chunk] += 1
-
                 else:
                     if last_chunk[1] == 1:
                         last_chunk = ['', 0]
-                    last_chunk[0] += sent[i]
-                    chunks_in_sent.append(sent[i])
+                    last_chunk[0] += concatenated_sentence[i]
+                    chunks_in_sent.append(concatenated_sentence[i])
                     i += 1
 
             if self._use_skip:
@@ -206,7 +207,7 @@ class LessIsBetter:
         covered_rate, chunk_groups = self.eval_memorizer(doc_covered_all)
         chunk_in_use = sum([g_len if key==0 else 1 for key, g_len in chunk_groups])
 
-        mem_usage = len(set(used_chunks.keys()) & set(self.memory))/len(self.memory)
+        mem_usage = len(set(used_chunks.keys()) & set(self.memory)) / len(self.memory)
 
         return covered_rate, len(doc_covered_all)/chunk_in_use, mem_usage, in_count
 
@@ -222,15 +223,13 @@ class LessIsBetter:
         f1 = 2 * pre * rec / (pre + rec)
         return pre, rec, f1
 
-    def run(self, epochs: int, corpus_train, corpus_test):
+    def run(self, epochs: int, corpus_train: Corpus, corpus_test: Corpus):
         for epoch_id in range(epochs):
             self.training_step(epoch_id, corpus_train, corpus_test)
 
-    def training_step(self, epoch_id: int, corpus_train, corpus_test):
-        article_whole, article_raw_whole = random.choice(corpus_train)
-        article, article_raw = article_whole, article_raw_whole
-
-        covered_rate, avg_chunk_len, mem_usage, in_count = self.reading(article)
+    def training_step(self, epoch_id: int, corpus_train: Corpus, corpus_test: Corpus):
+        document = corpus_train.sample()
+        covered_rate, avg_chunk_len, mem_usage, in_count = self.reading(document)
     #     memory_log.append([time.time(), memory.par_list.copy()])
 
         # Every 100 epochs, you run validation-set statistics.
@@ -251,16 +250,16 @@ class LessIsBetter:
             stats.covered.append(covered_rate)
             stats.mem_usage.append(mem_usage)
 
-            for article, article_raw in corpus_test:
-                chunk_pos_0 = set(accumulate([len(c) for sent in article_raw for c in sent]))
+            for document in corpus_test.documents:
+                chunk_pos_0 = set(accumulate([len(pretoken) for sentence in document.sentences for pretoken in sentence.words]))
 
-                chunk_pos = self.show_reading(article, decompose=True)
+                chunk_pos = self.show_reading(document, decompose=True)
                 precision_1 = len(chunk_pos_0&chunk_pos)/len(chunk_pos)
                 recall_1 = len(chunk_pos_0&chunk_pos)/len(chunk_pos_0)
 
-                chunks_0 = [[c for c in sent] for sent in article_raw]
+                chunks_0 = [sentence.words for sentence in document.sentences]
 
-                chunks = self.show_reading(article, return_chunks=True, comb_sents=False, decompose=True)
+                chunks = self.show_reading(document, return_chunks=True, comb_sents=False, decompose=True)
                 precision_2, recall_2, f1_2 = self.get_f1(chunks_0, chunks)
 
                 stats.pr1.append(precision_1)
@@ -305,14 +304,16 @@ class LessIsBetter:
         else:
             return (large_chunk,)
 
-    def show_reading(self, article, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):
+    def show_reading(self, article: Document, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):
         chunks = []
 
-        for sent in article:
+        for sentence in article.sentences:
+            concatenated_sentence = sentence.cat()
+
             sent_chunks = []
             i = 0
-            while i < len(sent):
-                chunk_2nd, chunk = self.memory.match_two(sent[i: i+max_len])
+            while i < len(concatenated_sentence):
+                chunk_2nd, chunk = self.memory.match_two(concatenated_sentence[i:i+max_len])
                 if len(chunk) > 0:
 
                     if len(chunk) > 1 and len(chunk_2nd) > 0:
@@ -323,7 +324,7 @@ class LessIsBetter:
 
                         while end_0 != end:
                             if end_0 > end:
-                                next_chunk = self.memory.match(sent[end: end+max_len])
+                                next_chunk = self.memory.match(concatenated_sentence[end: end+max_len])
                                 chunk_size_next = len(next_chunk)
                                 if chunk_size_next > 0:
                                     end += chunk_size_next
@@ -333,10 +334,10 @@ class LessIsBetter:
                                     end += 1
                                     N_unknowns += 1
                                     N_chunks += 1
-                                    chunks_t.append(sent[end-1])
+                                    chunks_t.append(concatenated_sentence[end-1])
 
                             elif end_0 < end:
-                                next_chunk = self.memory.match(sent[end_0: end_0+max_len])
+                                next_chunk = self.memory.match(concatenated_sentence[end_0: end_0+max_len])
                                 chunk_size_next = len(next_chunk)
                                 if chunk_size_next > 0:
                                     end_0 += chunk_size_next
@@ -347,7 +348,7 @@ class LessIsBetter:
                                     end_0 += 1
                                     N_unknowns_0 += 1
                                     N_chunks_0 += 1
-                                    chunks_t_0.append(sent[end_0-1])
+                                    chunks_t_0.append(concatenated_sentence[end_0-1])
 
                         redundant = N_unknowns_0 == N_unknowns and \
                                   ((N_chunks_0 > N_chunks) or
@@ -367,7 +368,7 @@ class LessIsBetter:
                         i += len(chunk)
                 else:
                     i += 1
-                    sent_chunks.append(sent[i-1])
+                    sent_chunks.append(concatenated_sentence[i-1])
 
             chunks.append(sent_chunks)
 
@@ -381,28 +382,30 @@ class LessIsBetter:
             if comb_sents:
                 print(' '.join(chunks))
             else:
-                for sent in chunks: print(' '.join(sent))
+                for concatenated_sentence in chunks: print(' '.join(concatenated_sentence))
 
         if return_chunks:
             return chunks
         else:
             return set(accumulate([len(c) for c in chunks]))
 
-    def show_reading(self, article, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):  # FIXME [TB]: Another duplicate method implement.
+    def show_reading(self, article: Document, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):  # FIXME [TB]: Another duplicate method implement.
         chunks = []
 
-        for sent in article:
+        for sentence in article.sentences:
+            concatenated_sentence = sentence.cat()
+
             sent_chunks = []
             i = 0
-            while i < len(sent):
-                chunk_2nd, chunk = self.memory.match_two(sent[i: i+max_len])
+            while i < len(concatenated_sentence):
+                chunk_2nd, chunk = self.memory.match_two(concatenated_sentence[i: i+max_len])
                 if len(chunk) > 0:
 
                     sent_chunks.append(chunk)
                     i += len(chunk)
                 else:
                     i += 1
-                    sent_chunks.append(sent[i-1])
+                    sent_chunks.append(concatenated_sentence[i-1])
 
             chunks.append(sent_chunks)
 
@@ -416,19 +419,18 @@ class LessIsBetter:
             if comb_sents:
                 print(' '.join(chunks))
             else:
-                for sent in chunks: print(' '.join(sent))
+                for concatenated_sentence in chunks: print(' '.join(concatenated_sentence))
 
         if return_chunks:
             return chunks
         else:
             return set(accumulate([len(c) for c in chunks]))
 
-    def show_result(self, article_raw, article, decompose=False):
+    def show_result(self, article: Document, decompose=False):
         chunk_pos = self.show_reading(article, decompose=decompose)
-        chunk_pos_0 = set(accumulate([len(c) for sent in article_raw for c in sent]))
+        chunk_pos_0 = set(accumulate([len(pretoken) for sentence in article.sentences for pretoken in sentence.words]))
 
-
-        doc = ''.join(article)
+        doc = ''.join([sentence.cat() for sentence in article.sentences])
         chunk_pos_0, chunk_pos = [0] + sorted(chunk_pos_0),[0] + sorted(chunk_pos)
 
         i, j = 0, 0
@@ -454,24 +456,29 @@ class LessIsBetter:
                 i += 1
                 j += 1
 
-    def demo(self, article_raw, article, decompose=False, section=(0,-1)):
-        onset, end = section
+    def demo(self, article: Document, decompose=False, section=(0,-1)):
+        start_sentence_idx, end_sentence_idx = section
+        start_sentence_idx_bis, end_sentence_idx_bis = -1, 0
         count = 0
         for chunk_i in range(999):
-            if count == len(''.join(article[:onset])):
-                chunk_i_0 = chunk_i
-            elif count == len(''.join(article[:end])):
+            if count == len(''.join([sentence.cat() for sentence in article.sentences[:start_sentence_idx]])):  # TODO: This comparison makes no sense. Count is in units of pretokens. The join is counting characters.
+                start_sentence_idx_bis = chunk_i
+            elif count == len(''.join([sentence.cat() for sentence in article.sentences[:end_sentence_idx]])):
+                end_sentence_idx_bis = chunk_i
                 break
 
-            count += len(article_raw[chunk_i])
+            count += len(article.sentences[chunk_i].words)
 
-        self.show_result(article_raw[chunk_i_0:chunk_i], article[onset:end], decompose=decompose)
+        self.show_result(
+            article_raw[start_sentence_idx_bis:end_sentence_idx_bis], article[start_sentence_idx:end_sentence_idx],
+            decompose=decompose
+        )  # TODO This one is difficult to refactor because supposedly you want to get different sets of sentences from the pretokenised vs. concatenated form of the corpus?
 
-    def show_result_with_idx(self, article_raw, article, decompose=False):
+    def show_result_with_idx(self, article: Document, decompose=False):
         chunk_pos = self.show_reading(article, decompose=decompose)
-        chunk_pos_0 = set(accumulate([len(c) for sent in article_raw for c in sent]))
+        chunk_pos_0 = set(accumulate([len(pretoken) for sentence in article.sentences for pretoken in sentence.words]))
 
-        doc = ''.join(article)
+        doc = ''.join(sentence.cat() for sentence in article.sentences)
         chunk_pos_0, chunk_pos = [0] + sorted(chunk_pos_0), [0] + sorted(chunk_pos)
 
         i, j = 1, 1

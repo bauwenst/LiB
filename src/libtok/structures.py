@@ -1,7 +1,31 @@
+from dataclasses import dataclass
+
 from itertools import chain
 from collections import Counter
 import numpy as np
+import numpy.random as npr
 import numba
+
+
+@dataclass
+class Sentence:
+    words: list[str]
+
+    def cat(self) -> str:
+        return "".join(self.words)
+
+
+@dataclass
+class Document:
+    sentences: list[Sentence]
+
+
+@dataclass
+class Corpus:
+    documents: list[Document]
+
+    def sample(self, rng=npr.default_rng(0)) -> Document:
+        return self.documents[rng.integers(high=len(self.documents))]
 
 
 class TrieList:
@@ -320,18 +344,17 @@ class TrieList:
     def search(self, word):
         return word in self.par_dict
 
-
-    def skipgram_match(self, chunks):
-        curNode = self.root['skipgram']
+    def skipgram_match(self, chunks: list[str]):
+        current_node = self.root['skipgram']
         gram = []
 
         for c in chunks:
-            if c in curNode:
+            if c in current_node:
                 gram.append(c)
                 if len(gram) > 1:
                     break
                 else:
-                    curNode = curNode[c]
+                    current_node = current_node[c]
             elif len(gram) > 0:
                 gram.append(c)
         else:
@@ -342,7 +365,7 @@ class TrieList:
         else:
             return None, None, None
 
-    def match(self, string):
+    def match(self, string: str):
         curNode = self.root
         words = ['','']
         for c in string:
@@ -362,7 +385,7 @@ class TrieList:
         else:
             return words[-2]
 
-    def match_two(self, string):
+    def match_two(self, string: str):
         curNode = self.root
         words = ['','']
         for c in string:
