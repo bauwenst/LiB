@@ -25,7 +25,7 @@ class Corpus:
     documents: list[Document]
 
     def sample(self, rng=npr.default_rng(0)) -> Document:
-        return self.documents[rng.integers(high=len(self.documents))]
+        return self.documents[rng.integers(low=0, high=len(self.documents))]
 
 
 class TrieList:
