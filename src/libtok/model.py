@@ -389,43 +389,6 @@ class LessIsBetter:
         else:
             return set(accumulate([len(c) for c in chunks]))
 
-    def show_reading(self, article: Document, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):  # FIXME [TB]: Another duplicate method implement.
-        chunks = []
-
-        for sentence in article.sentences:
-            concatenated_sentence = sentence.cat()
-
-            sent_chunks = []
-            i = 0
-            while i < len(concatenated_sentence):
-                chunk_2nd, chunk = self.memory.match_two(concatenated_sentence[i: i+max_len])
-                if len(chunk) > 0:
-
-                    sent_chunks.append(chunk)
-                    i += len(chunk)
-                else:
-                    i += 1
-                    sent_chunks.append(concatenated_sentence[i-1])
-
-            chunks.append(sent_chunks)
-
-        if decompose:
-            chunks = [[sub_c for c in sent for sub_c in self.find_subs(c)] for sent in chunks]
-
-        if comb_sents:
-            chunks = [c for sent in chunks for c in sent]
-
-        if display:
-            if comb_sents:
-                print(' '.join(chunks))
-            else:
-                for concatenated_sentence in chunks: print(' '.join(concatenated_sentence))
-
-        if return_chunks:
-            return chunks
-        else:
-            return set(accumulate([len(c) for c in chunks]))
-
     def show_result(self, article: Document, decompose=False):
         chunk_pos = self.show_reading(article, decompose=decompose)
         chunk_pos_0 = set(accumulate([len(pretoken) for sentence in article.sentences for pretoken in sentence.words]))
@@ -456,23 +419,10 @@ class LessIsBetter:
                 i += 1
                 j += 1
 
-    def demo(self, article: Document, decompose=False, section=(0,-1)):
+    def demo(self, article: Document, decompose=False, section=(0,None)):
         start_sentence_idx, end_sentence_idx = section
-        start_sentence_idx_bis, end_sentence_idx_bis = -1, 0
-        count = 0
-        for chunk_i in range(999):
-            if count == len(''.join([sentence.cat() for sentence in article.sentences[:start_sentence_idx]])):  # TODO: This comparison makes no sense. Count is in units of pretokens. The join is counting characters.
-                start_sentence_idx_bis = chunk_i
-            elif count == len(''.join([sentence.cat() for sentence in article.sentences[:end_sentence_idx]])):
-                end_sentence_idx_bis = chunk_i
-                break
-
-            count += len(article.sentences[chunk_i].words)
-
-        self.show_result(
-            article_raw[start_sentence_idx_bis:end_sentence_idx_bis], article[start_sentence_idx:end_sentence_idx],
-            decompose=decompose
-        )  # TODO This one is difficult to refactor because supposedly you want to get different sets of sentences from the pretokenised vs. concatenated form of the corpus?
+        sliced = Document(sentences=article.sentences[start_sentence_idx:end_sentence_idx])
+        self.show_result(sliced, decompose=decompose)
 
     def show_result_with_idx(self, article: Document, decompose=False):
         chunk_pos = self.show_reading(article, decompose=decompose)

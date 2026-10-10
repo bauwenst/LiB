@@ -39,7 +39,6 @@ class TrieList:
         self.word_end = -1
         self.par_list = []
         self.par_dict = dict()
-        self.detected = []
         self.relationship = dict()
         self.root['skipgram'] = dict()
 
@@ -92,21 +91,10 @@ class TrieList:
     def exchange(self, i, j):
         self.par_list[j], self.par_list[i] = self.par_list[i], self.par_list[j]
 
-    # def group_move_back(self, words, step):
-    #     words_c = Counter(words).most_common()[::-1]
-
-    #     word_ind_li = np.where(np.in1d(self.par_list, [k for k,v in words_c]))[0]
-    #     count_li = [v for k,v in words_c]
-    #     for i, c in zip(word_ind_li, count_li):
-    #         to_move = min(c * step, i-10)
-    #         self.par_list[i - to_move], self.par_list[i - to_move + 1: i + 1] = self.par_list[i], self.par_list[i - to_move: i] 
-
-    
     def move_back(self, i, step):
         t = self.par_list[i]
         self.par_list[i-step+1: i+1] = self.par_list[i-step: i] 
         self.par_list[i-step] = t
-
 
     def group_move_back(self, words, update_rate):
         self.update_ind() # make "index_with_prior" works
@@ -119,6 +107,15 @@ class TrieList:
                 self.par_dict[w] = raw_ind - step
 
         self.update_ind()
+
+    # def group_move_back(self, words, step):
+    #     words_c = Counter(words).most_common()[::-1]
+
+    #     word_ind_li = np.where(np.in1d(self.par_list, [k for k,v in words_c]))[0]
+    #     count_li = [v for k,v in words_c]
+    #     for i, c in zip(word_ind_li, count_li):
+    #         to_move = min(c * step, i-10)
+    #         self.par_list[i - to_move], self.par_list[i - to_move + 1: i + 1] = self.par_list[i], self.par_list[i - to_move: i]
 
     # def move_to_tail(self, i, step, to_del):
     #     t = self.par_list[i]
@@ -144,40 +141,31 @@ class TrieList:
     #     self.update_ind()
     #     self.group_remove(to_del)
 
-    def move(self, i, step):
+    def move(self, i: int, step: int):
         w = self.par_list[i]
 
-        if step < 0 and i != 0:
+        if step < 0 and i != 0:  # Promotion
             self.par_list[i+step+1: i+1] = self.par_list[i+step: i]
             self.par_list[i+step] = w
             self.par_dict[w] = i + step
-        else:
-            if i == len(self.par_list)-1:
-                return
-
-            if i+step>=len(self.par_list):
-                step = len(self.par_list)-i-1
-
-            self.par_list[i: i+step] = self.par_list[i+1: i+step+1]
-            self.par_list[i+step] = w
-            self.par_dict[w] = i + step
-
-    def move(self, i, step):  # FIXME [TB]: I don't know why there are two different implementations of this method. You tell me which is the right one.
-        w = self.par_list[i]
-
-        if step < 0 and i != 0:
-            self.par_list[i+step+1: i+1] = self.par_list[i+step: i]
-            self.par_list[i+step] = w
-            self.par_dict[w] = i + step
-        elif step > 0:
-            if i+step<len(self.par_list):
-                self.par_list[i: i+step] = self.par_list[i+1: i+step+1]
+        # else:  # Old demotion code
+        #     if i == len(self.par_list)-1:
+        #         return
+        #
+        #     if i+step >= len(self.par_list):
+        #         step = len(self.par_list)-i-1
+        #
+        #     self.par_list[i:i+step] = self.par_list[i+1:i+step+1]
+        #     self.par_list[i+step] = w
+        #     self.par_dict[w] = i + step
+        elif step > 0:  # Demotion
+            if i+step < len(self.par_list):  # Demotion to within the list
+                self.par_list[i:i+step] = self.par_list[i+1: i+step+1]
                 self.par_list[i+step] = w
                 self.par_dict[w] = i + step
-            else:
+            else:  # Drop past tail
                 self.par_list[i:] = self.par_list[i+1:]
                 self._del(w)
-                self.detected.append(w)
 
     def group_move(self, words, update_rate):
         self.update_ind()  # make "index_with_prior" works
@@ -492,4 +480,3 @@ class TrieList:
             elif mode == 'root not dict':
                 li = [i if isinstance(i,str) else ''.join(i) for i in self.par_dict]
             return [i for i in chunks if i not in li]
-
