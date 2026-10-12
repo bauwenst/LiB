@@ -65,7 +65,6 @@ class TrieList:
         self.insert(-1, word, note)
 
     def _del(self, word): # delete from the trie and dict
-        # print(word)
         curNode = self.root
         def f(word, curNode):
             if len(word) == 0:
@@ -86,73 +85,26 @@ class TrieList:
     def exchange(self, i, j):
         self.par_list[j], self.par_list[i] = self.par_list[i], self.par_list[j]
 
-    def move_back(self, i, step):
-        t = self.par_list[i]
-        self.par_list[i-step+1: i+1] = self.par_list[i-step: i] 
-        self.par_list[i-step] = t
-
-    def group_move_back(self, words, update_rate):
-        self.update_ind() # make "index_with_prior" works
-
-        for w in words:
-            raw_ind = self.index_with_prior(w)
-            if raw_ind > 0:
-                step = int(raw_ind * update_rate) + 1
-                self.move_back(raw_ind, step)
-                self.par_dict[w] = raw_ind - step
-
-        self.update_ind()
-
-    # def group_move_back(self, words, step):
-    #     words_c = Counter(words).most_common()[::-1]
-
-    #     word_ind_li = np.where(np.in1d(self.par_list, [k for k,v in words_c]))[0]
-    #     count_li = [v for k,v in words_c]
-    #     for i, c in zip(word_ind_li, count_li):
-    #         to_move = min(c * step, i-10)
-    #         self.par_list[i - to_move], self.par_list[i - to_move + 1: i + 1] = self.par_list[i], self.par_list[i - to_move: i]
-
-    # def move_to_tail(self, i, step, to_del):
-    #     t = self.par_list[i]
-    #     if i+step+1>len(self.par_list):
-    #         to_del.add(t)
-    #     else:
-    #         self.par_list[i: i+step] = self.par_list[i+1: i+step+1]
-    #         self.par_list[i+step] = t
-            
-    # def group_move_to_tail(self, words, update_rate):
-    #     to_del = set() # store the item moved out from parlist
-    #     self.update_ind() # make "index_with_prior" works
-
-    #     for w in words:
-    #         if w in self.par_dict:
-    #             raw_ind = self.index_with_prior2(w)
-
-    #             if raw_ind > 0:
-    #                 step = int(raw_ind * update_rate) + 1
-    #                 self.move_to_tail(raw_ind, step, to_del)
-    #                 self.par_dict[w] = raw_ind + step
-
-    #     self.update_ind()
-    #     self.group_remove(to_del)
-
     def move(self, i: int, step: int):
+        """
+        Shift the type at index ``i`` by ``step`` positions in the ranked lexicon.
+
+        Negative ``step`` promotes toward the head (lower ordinal); positive
+        ``step`` demotes toward the tail. If demotion would move the type past
+        the end of the list, the type is removed entirely (active forgetting).
+
+        Historical note: an earlier demotion policy never deleted. When a step
+        would have gone past the end, it clamped the type onto the last slot
+        instead, so the lexicon could shrink only via the separate passive
+        probation / life mechanism. The delete-on-overflow behaviour below
+        matches the LiB paper's active-forgetting rule.
+        """
         w = self.par_list[i]
 
         if step < 0 and i != 0:  # Promotion
             self.par_list[i+step+1: i+1] = self.par_list[i+step: i]
             self.par_list[i+step] = w
             self.par_dict[w] = i + step
-        # else:  # Old demotion code
-        #     if i == len(self.par_list)-1:
-        #         return
-        #
-        #     if i+step >= len(self.par_list):
-        #         step = len(self.par_list)-i-1
-        #
-        #     self.par_list[i:i+step] = self.par_list[i+1:i+step+1]
-        #     self.par_list[i+step] = w
-        #     self.par_dict[w] = i + step
         elif step > 0:  # Demotion
             if i+step < len(self.par_list):  # Demotion to within the list
                 self.par_list[i:i+step] = self.par_list[i+1: i+step+1]
@@ -163,11 +115,23 @@ class TrieList:
                 self._del(w)
 
     def group_move(self, words, update_rate):
+        """
+        Apply a sequence of reward/punish events to the ranked lexicon.
+
+        ``words`` is an iterable of ``(type, e)`` pairs from training: ``e == -1``
+        means reward (promote), ``e == 1`` means punish (demote). Each event is
+        applied in order with a step of size roughly ``|e| * (index * update_rate)``.
+
+        Historical note: a discarded alternative first counted how many times
+        each type was rewarded or punished in the batch, then moved it once with
+        a step that grew geometrically in that count, ``(1 ± update_rate)**n``.
+        The live rule treats every event separately with a linear step, which is
+        closer to the paper's per-update re-ranking formula.
+        """
         self.update_ind()  # make "index_with_prior" works
 
         offset = 0
         for w, e in words:
-            # print(w)
             if w in self.par_dict:
                 raw_ind = self.index_with_prior(w, offset)
 
@@ -180,28 +144,6 @@ class TrieList:
 
         self.update_ind()
 
-    # def group_move(self, words, update_rate):
-    #     self.update_ind() # make "index_with_prior" works
-    #     offset = 0
-    #     rewards = Counter([w for w,e in words if e<0])
-    #     punishs = Counter([w for w,e in words if e>0])
-    #
-    #     for w, n in rewards.items():
-    #         if w in self.par_dict:
-    #             raw_ind = self.index_with_prior(w, offset)
-    #             if raw_ind is not None and raw_ind > 0:
-    #                 step = raw_ind-int(raw_ind * (1-update_rate)**n)   
-    #                 self.move(raw_ind, step)
-    #
-    #     for w, n in punishs.items():
-    #         if w in self.par_dict:
-    #             raw_ind = self.index_with_prior(w, offset)
-    #             if raw_ind is not None and raw_ind > 0:
-    #                 offset += 1
-    #                 step = raw_ind-int(raw_ind * (1+update_rate)**n)             
-    #                 self.move(raw_ind, step)
-    #    self.update_ind()
-    
     def group_remove(self, words):
         if len(words) > 0:
             words_ = []
@@ -209,9 +151,6 @@ class TrieList:
                 if w in self.par_dict:
                     self._del(w)
                     words_.append(w)
-        
-            # li = np.array(self.par_list,dtype=object)
-            # self.par_list = li[~np.in1d(li, words_)].tolist()
 
             w_set = set(words_)
             self.par_list = [i for i in self.par_list if i not in w_set]
@@ -235,38 +174,9 @@ class TrieList:
             if nothing==False:
                 raise
             return nothing
-    
-    # def index_with_prior_bi(self, word): # bidirection
-    #     end = len(self.par_list)
-    #     prior_ind = self.par_dict[word]
-
-    #     if prior_ind < end:
-    #         if self.par_list[prior_ind] == word:
-    #             return prior_ind
-
-    #         elif end - prior_ind > prior_ind:
-    #             if prior_ind > 1:
-    #                 iter_range = (prior_ind+sign*i for i in range(1, prior_ind) for sign in (-1, 1))
-    #             else:
-
-    #                 iter_range = (1,)
-    #             iter_range = chain((0,), iter_range, range(prior_ind, end, 1))
-    #         else:
-    #             if end - prior_ind > 1:
-    #                 iter_range = (prior_ind+sign*i for i in range(1, end - prior_ind) for sign in (-1, 1))
-    #             else:
-    #                 iter_range = (1,)
-    #             iter_range = chain((0,), iter_range, range(prior_ind - (end - prior_ind), -1, -1))
-    #     else:
-    #         iter_range = range(end-1, -1, -1)
-
-    #     for i in iter_range:
-    #         if self.par_list[i] == word:
-    #             return i
 
     def update_ind(self):
         self.par_dict = dict((word,ind) for ind,word in enumerate(self.par_list))
-        # self.relationship = dict((k,v) for k,v in self.relationship.items() if k in self.par_dict)
 
     def remove(self, word):
         ind = self.index_with_prior(word)

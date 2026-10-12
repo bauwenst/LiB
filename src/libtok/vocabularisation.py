@@ -138,7 +138,6 @@ class Vocabulariser:
 
         for c, label in reward_list:
             if c in self.memory.relationship:
-    #             print(lable, c,memory.relationship[c])
                 reward_list.append((self.memory.relationship[c], label))
 
         self.memory.group_remove(to_del)
@@ -257,9 +256,7 @@ class Vocabulariser:
                     skip_gram, skip, chunks_in_sent = self.memory.skipgram_match(chunks_in_sent)
                     if skip is not None and len(skip) > 1:
                         skip = ''.join(skip)
-    #                     if (len(skip) < 8):print(skip)
                         if (len(skip) <= self._mini_gap) and (random.random() < self._memory_in):
-        #                     memorize(memory, to_memorize, skip, reward_list)
                             if not self.memory.search(skip):
                                 self.memory.relationship[skip] = ('skipgram', *skip_gram)
                                 self.memory.append(skip)
@@ -301,7 +298,6 @@ class Vocabulariser:
         """
         document = corpus_train.sample()
         covered_rate, avg_chunk_len, mem_usage, in_count = self.reading(document)
-    #     memory_log.append([time.time(), memory.par_list.copy()])
 
         # Every 100 epochs, you run validation-set statistics.
         if epoch_id % 100 == 0:
@@ -342,10 +338,6 @@ class Vocabulariser:
             self.memory_log.append([time.time(), 2*precision_2*recall_2/(precision_2+recall_2),len(self.memory)])
 
             print(f'{epoch_id}\t  MemLength: {int(np.mean(stats.mem_length))}')
-    #          B: {math.log(MemLength)/avg_chunk_len_1:.3f}
-    #         print()
-    #         print(f'Precision: {precision_0*100:.2f}% \t Recall: {recall_0*100:.2f}% \t F1: {2*precision_0*recall_0/(precision_0+recall_0)*100:.2f}%')
-    #         print(f'Chunk_len: {avg_chunk_len_1:.1f} \t Word_len: {avg_chunk_len_2:.1f} \t',end='')
             print(f'[B] Precision: {precision_1*100:.2f}% \t Recall: {recall_1*100:.2f}% \t F1: {2*precision_1*recall_1/(precision_1+recall_1)*100:.2f}%')
             print(f'[L] Precision: {precision_2*100:.2f}% \t Recall: {recall_2*100:.2f}% \t F1: {2*precision_2*recall_2/(precision_2+recall_2)*100:.2f}%')
             print()
