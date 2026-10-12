@@ -139,3 +139,53 @@ class LiBVisualiser:
             elif mode == 'root not dict':
                 li = [i if isinstance(i, str) else repr(i) for i in lexicon.types_indexed]
             return [i for i in chunks if i not in li]
+
+
+    def show_reading(
+        self,
+        article: Document,
+        max_len: int = 10,
+        decompose: bool = False,
+        display: bool = False,
+        return_chunks: bool = False,
+        comb_sents: bool = True,
+    ):
+        """
+        Inference-time segmentation of ``article`` (legacy name for ``segment``).
+
+        Delegates to ``TwoGreedySegmenter.segment`` (two-greedy decode over the
+        current lexicon). Optionally prints the chunks via the visualiser.
+
+        Parameters
+        ----------
+        article :
+            Document to segment.
+        max_len :
+            Match window in characters (default ``10``).
+        decompose :
+            If True, decompose chunks with ``find_subs``.
+        display :
+            If True, print the segmentation (space-separated chunks).
+        return_chunks :
+            If True, return chunk strings; if False, return boundary offsets.
+        comb_sents :
+            If True, flatten across sentences before return / display.
+
+        Returns
+        -------
+        list or set
+            Same as ``TwoGreedySegmenter.segment``.
+        """
+        chunks = self.segmenter.segment(
+            article,
+            max_len=max_len,
+            decompose=decompose,
+            return_chunks=True,
+            comb_sents=comb_sents,
+        )
+        if display:
+            self.display_segmentation(chunks, comb_sents=comb_sents)
+        if return_chunks:
+            return chunks
+        else:
+            return set(accumulate([len(c) for c in chunks]))
