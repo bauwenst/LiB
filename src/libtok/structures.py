@@ -1,10 +1,29 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Iterable, Optional, Sequence, Union
 
 import numpy.random as npr
 from numpy.random import Generator as RNG
 
-Word = Union[str, tuple[str,...]]
+
+class Bound(Enum):
+    """Sentence boundary markers used by the skip-gram path."""
+    BOS = "bos"
+    EOS = "eos"
+
+
+@dataclass(frozen=True)
+class SkipGram:
+    """Skip-gram template: left and right anchors with a fill in between.
+
+    Frozen so instances are hashable and equal when ``left``/``right`` match.
+    """
+    left: Union[str, Bound]
+    right: Union[str, Bound]
+
+
+VocabEntry = Union[str, SkipGram]
+Chunk = Union[str, Bound]
 
 
 @dataclass
@@ -32,22 +51,25 @@ class TrieList:
     word_end = -1
 
     def __init__(self):
-        """
-        Initialize your data structure here.
-        """
         self.root = {}
         self.word_end = -1
-        self.par_list = []
-        self.par_dict = dict()
-        self.relationship = dict()
-        self.root['skipgram'] = dict()
+        self.types_sorted = []
+        self.types_indexed = dict()
 
-    def insert(self, index: int, word: Word, note: Any = True):
+        self.skipgram_root = {}
+        self.skipgram_frames: dict[str, set[SkipGram]] = dict()  # fill string → skip-gram frames that produced it
+
+    def _trie_and_path(self, word: VocabEntry) -> tuple[dict, Sequence]:
+        if isinstance(word, SkipGram):
+            return self.skipgram_root, (word.left, word.right)
+        return self.root, word
+
+    def insert(self, index: int, word: VocabEntry, note: Any = True):
         """
         Inserts a word into the trie.
         """
-        cur_node = self.root
-        for c in word:
+        cur_node, path = self._trie_and_path(word)
+        for c in path:
             if not c in cur_node:
                 cur_node[c] = {}
             cur_node = cur_node[c]
@@ -58,35 +80,49 @@ class TrieList:
             cur_node[self.word_end] = note
         
         if index == -1:
-            self.par_list.append(word)
-            self.par_dict[word] = len(self.par_list) - 1
+            self.types_sorted.append(word)
+            self.types_indexed[word] = len(self.types_sorted) - 1
         else:
-            self.par_list.insert(index, word)
-            self.par_dict[word] = index
+            self.types_sorted.insert(index, word)
+            self.types_indexed[word] = index
        
-    def append(self, word: Word, note: Any = True):
+    def append(self, word: VocabEntry, note: Any = True):
         self.insert(-1, word, note)
 
-    def _del(self, word: Word): # delete from the trie and dict
-        cur_node = self.root
-        def f(word, cur):
-            if len(word) == 0:
+    def _unlink(self, word: VocabEntry):
+        """Drop ``relationship`` entries that refer to a removed type."""
+        if isinstance(word, str):
+            self.skipgram_frames.pop(word, None)
+        elif isinstance(word, SkipGram):
+            empty = []
+            for fill, frames in self.skipgram_frames.items():
+                frames.discard(word)
+                if not frames:
+                    empty.append(fill)
+            for fill in empty:
+                del self.skipgram_frames[fill]
+
+    def _del(self, word: VocabEntry): # delete from the trie and dict
+        cur_node, path = self._trie_and_path(word)
+        def f(remaining, cur):
+            if len(remaining) == 0:
                 del cur[-1]
             else:  
-                f(word[1:], cur[word[0]])
-                if len(cur[word[0]]) == 0:
-                    del cur[word[0]]
+                f(remaining[1:], cur[remaining[0]])
+                if len(cur[remaining[0]]) == 0:
+                    del cur[remaining[0]]
 
-        f(word, cur_node)
-        del self.par_dict[word]
+        f(path, cur_node)
+        del self.types_indexed[word]
+        self._unlink(word)
     
-    def pop(self, index: int = -1) -> Word:
-        word = self.par_list.pop(index)
+    def pop(self, index: int = -1) -> VocabEntry:
+        word = self.types_sorted.pop(index)
         self._del(word)
         return word
 
     def exchange(self, i: int, j: int):
-        self.par_list[j], self.par_list[i] = self.par_list[i], self.par_list[j]
+        self.types_sorted[j], self.types_sorted[i] = self.types_sorted[i], self.types_sorted[j]
 
     def move(self, i: int, step: int):
         """
@@ -102,22 +138,22 @@ class TrieList:
         probation / life mechanism. The delete-on-overflow behaviour below
         matches the LiB paper's active-forgetting rule.
         """
-        w = self.par_list[i]
+        w = self.types_sorted[i]
 
         if step < 0 and i != 0:  # Promotion
-            self.par_list[i+step+1: i+1] = self.par_list[i+step: i]
-            self.par_list[i+step] = w
-            self.par_dict[w] = i + step
+            self.types_sorted[i + step + 1: i + 1] = self.types_sorted[i + step: i]
+            self.types_sorted[i + step] = w
+            self.types_indexed[w] = i + step
         elif step > 0:  # Demotion
-            if i+step < len(self.par_list):  # Demotion to within the list
-                self.par_list[i:i+step] = self.par_list[i+1: i+step+1]
-                self.par_list[i+step] = w
-                self.par_dict[w] = i + step
+            if i+step < len(self.types_sorted):  # Demotion to within the list
+                self.types_sorted[i:i + step] = self.types_sorted[i + 1: i + step + 1]
+                self.types_sorted[i + step] = w
+                self.types_indexed[w] = i + step
             else:  # Drop past tail
-                self.par_list[i:] = self.par_list[i+1:]
+                self.types_sorted[i:] = self.types_sorted[i + 1:]
                 self._del(w)
 
-    def group_move(self, words: Iterable[tuple[Word, int]], update_rate: float):
+    def group_move(self, words: Iterable[tuple[VocabEntry, int]], update_rate: float):
         """
         Apply a sequence of reward/punish events to the ranked lexicon.
 
@@ -135,7 +171,7 @@ class TrieList:
 
         offset = 0
         for w, e in words:
-            if w in self.par_dict:
+            if w in self.types_indexed:
                 raw_ind = self.index_with_prior(w, offset)
 
                 if raw_ind is not None and raw_ind > 0:
@@ -147,45 +183,45 @@ class TrieList:
 
         self.update_ind()
 
-    def group_remove(self, words: Sequence[Word]):
+    def group_remove(self, words: Sequence[VocabEntry]):
         if len(words) > 0:
             words_ = []
             for w in words: 
-                if w in self.par_dict:
+                if w in self.types_indexed:
                     self._del(w)
                     words_.append(w)
 
             w_set = set(words_)
-            self.par_list = [i for i in self.par_list if i not in w_set]
+            self.types_sorted = [i for i in self.types_sorted if i not in w_set]
 
             self.update_ind()
 
-    def index(self, word: Word) -> int:
-        return self.par_list.index(word)
+    def index(self, word: VocabEntry) -> int:
+        return self.types_sorted.index(word)
 
-    def index_with_prior(self, word: Word, offset: int = 0, nothing: Union[bool, int] = False) -> Union[int, bool]:
+    def index_with_prior(self, word: VocabEntry, offset: int = 0, nothing: Union[bool, int] = False) -> Union[int, bool]:
         try:
-            prior_ind = self.par_dict[word]
+            prior_ind = self.types_indexed[word]
             if offset == 0:
-                return self.par_list.index(word, prior_ind)
+                return self.types_sorted.index(word, prior_ind)
             else:
                 start = prior_ind - offset 
                 if start < 0:
                     start = 0
-                return self.par_list.index(word, start)
+                return self.types_sorted.index(word, start)
         except:
             if nothing==False:
                 raise
             return nothing
 
     def update_ind(self):
-        self.par_dict = dict((word,ind) for ind,word in enumerate(self.par_list))
+        self.types_indexed = dict((word, ind) for ind,word in enumerate(self.types_sorted))
 
-    def remove(self, word: Word):
+    def remove(self, word: VocabEntry):
         ind = self.index_with_prior(word)
 
         self._del(word)
-        self.par_list[ind: ind + 1] = []
+        self.types_sorted[ind: ind + 1] = []
 
     def be_a_part(self, string: str) -> bool:
         if not self.search(string):
@@ -237,11 +273,11 @@ class TrieList:
         else:
             return f(string, cur_node)
 
-    def search(self, word: Word) -> bool:
-        return word in self.par_dict
+    def search(self, word: VocabEntry) -> bool:
+        return word in self.types_indexed
 
-    def skipgram_match(self, chunks: list[str]) -> tuple[Optional[list[str]], Optional[list[str]], Optional[list[str]]]:
-        current_node = self.root['skipgram']
+    def skipgram_match(self, chunks: list[Chunk]) -> tuple[Optional[list[Chunk]], Optional[list[Chunk]], Optional[list[Chunk]]]:
+        current_node = self.skipgram_root
         gram = []
 
         for c in chunks:
@@ -333,35 +369,35 @@ class TrieList:
             return ''
 
     def __iter__(self):
-        return iter(self.par_list)
+        return iter(self.types_sorted)
             
-    def __contains__(self, word: Word) -> bool:
+    def __contains__(self, word: VocabEntry) -> bool:
         return self.search(word)
     
     def __repr__(self) -> str:
-        return str(self.par_list)
+        return str(self.types_sorted)
     
     def __len__(self) -> int:
-        return len(self.par_list)
+        return len(self.types_sorted)
     
     def __set__(self) -> set:
-        return set(self.par_list)
+        return set(self.types_sorted)
     
     def __getitem__(self, key: Union[int, slice]) -> Any:
-        return self.par_list[key]
+        return self.types_sorted[key]
     
-    def __setitem__(self, key: int, value: Word):
-        self._del(self.par_list[key])
+    def __setitem__(self, key: int, value: VocabEntry):
+        self._del(self.types_sorted[key])
 
-        cur_node = self.root
-        for c in value:
+        cur_node, path = self._trie_and_path(value)
+        for c in path:
             if not c in cur_node:
                 cur_node[c] = {}
             cur_node = cur_node[c]
           
         cur_node[self.word_end] = True
 
-        self.par_list[key] = value
+        self.types_sorted[key] = value
 
     def debug(self, mode: str) -> list:
         from .visualisation import LiBVisualiser

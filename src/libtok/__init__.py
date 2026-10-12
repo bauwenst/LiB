@@ -1,6 +1,6 @@
 from .model import LessIsBetter
 from .segmentation import TwoGreedySegmenter
-from .structures import Corpus, Document, Sentence, TrieList
+from .structures import Bound, Corpus, Document, Sentence, SkipGram, TrieList
 from .vocabularisation import LiBVocabulariser
 from .visualisation import LiBVisualiser
 
@@ -13,4 +13,6 @@ __all__ = [
     "Sentence",
     "Document",
     "Corpus",
+    "Bound",
+    "SkipGram",
 ]

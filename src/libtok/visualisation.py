@@ -116,13 +116,13 @@ class LiBVisualiser:
         if lexicon is None:
             lexicon = self.lexicon
         if mode == 'dict not root':
-            return [i for i in lexicon.par_dict if not lexicon.match(i)==i]
+            return [i for i in lexicon.types_indexed if not lexicon.match(i) == i]
         elif mode == 'dict not list':
-            return [i for i in lexicon.par_dict if i not in lexicon.par_list]
+            return [i for i in lexicon.types_indexed if i not in lexicon.types_sorted]
         elif mode == 'list not root':
-            return [i for i in lexicon.par_list if not lexicon.match(i)==i]
+            return [i for i in lexicon.types_sorted if not lexicon.match(i) == i]
         elif mode == 'list not dict':
-            return [i for i in lexicon.par_list if i not in lexicon.par_dict]
+            return [i for i in lexicon.types_sorted if i not in lexicon.types_indexed]
         else:
             chunks = []
             curNode = lexicon.root
@@ -135,7 +135,7 @@ class LiBVisualiser:
                         chunks.append(pre)
             f('', curNode)
             if mode == 'root not list':
-                li = [i if isinstance(i,str) else ''.join(i) for i in lexicon.par_list]
+                li = [i if isinstance(i, str) else repr(i) for i in lexicon.types_sorted]
             elif mode == 'root not dict':
-                li = [i if isinstance(i,str) else ''.join(i) for i in lexicon.par_dict]
+                li = [i if isinstance(i, str) else repr(i) for i in lexicon.types_indexed]
             return [i for i in chunks if i not in li]

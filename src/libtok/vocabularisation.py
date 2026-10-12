@@ -8,7 +8,7 @@ import numpy as np
 import time
 
 from .segmentation import TwoGreedySegmenter
-from .structures import TrieList, Corpus, Document, Word
+from .structures import Bound, Corpus, Document, SkipGram, TrieList, VocabEntry
 
 
 class LiBVocabulariser:
@@ -24,7 +24,8 @@ class LiBVocabulariser:
         update_rate: float = 0.2,
         mini_gap: int = 2,
         use_skip: bool = False,
-        segmenter: Optional[TwoGreedySegmenter] = None,
+
+        eval_interval: int = 100,
     ):
         """
         Parameters
@@ -33,31 +34,35 @@ class LiBVocabulariser:
             Probation length ``τ₀`` for passive forgetting. After each training
             epoch, types in the tail of the lexicon are put on probation; if a
             type is not judged useful again within ``life`` epochs, it is removed.
+            Higher for larger vocabulary.
         max_len :
             Maximum character length of a chunk considered during matching and
             when proposing concatenations of adjacent chunks to memorise.
+            Higher for larger vocabulary.
         memory_in :
             Sampling probability ``α`` for proposing a new chunk (adjacent-pair
             or short unknown span) for memorisation. A type is appended only
             after it has been sampled at least twice (see ``memorize``).
+            Higher for larger vocabulary.
         memory_out :
             Forgetting ratio ``ω``. Each epoch, the last ``ω · |L|`` lexicon
             entries (at least the final slice of the ranked list) are placed on
             probation via ``to_dropout``.
+            Lower for larger vocabulary.
         update_rate :
             Re-ranking rate ``Δ``. After Good/Bad evaluation, a type's ordinal
             moves toward the head (reward) or tail (punish) by a step proportional
             to ``Δ``; demotion past ``|L|`` deletes the type (active forgetting).
+            Lower for larger vocabulary (smaller demotion steps, less active deletion).
         mini_gap :
             Maximum length of an unknown span (or skip-gram fill) that may be
             proposed for memorisation. Longer gaps are ignored.
+            Higher for larger vocabulary.
         use_skip :
             If True, enable the experimental skip-gram path: sample skip-gram
             slots and optionally memorise filled spans linked via
-            ``memory.relationship``.
-        segmenter :
-            Segmenter used for validation metrics in ``training_step``. Defaults
-            to a ``TwoGreedySegmenter`` bound to this trainer's ``memory``.
+            ``memory.relationship`` (filled span → set of ``SkipGram`` frames).
+            Enabling tends to grow the vocabulary (extra skip-gram types).
         """
         self._life = life
         self._max_len = max_len
@@ -67,10 +72,12 @@ class LiBVocabulariser:
         self._mini_gap = mini_gap
         self._use_skip = use_skip
 
+        self._eval_interval = eval_interval
+
         self.to_dropout = dict()
         self.memory = TrieList()
         self.memory_log = []
-        self.segmenter = segmenter if segmenter is not None else TwoGreedySegmenter(self.memory)
+        self.segmenter = TwoGreedySegmenter(self.memory)
 
     def initialise(self, corpus_samples: Iterable[Iterable[str]]):
         self.to_dropout.clear()
@@ -149,8 +156,9 @@ class LiBVocabulariser:
                 self.to_dropout[chunk_to_test] = current_life - 1
 
         for c, label in reward_list:
-            if c in self.memory.relationship:
-                reward_list.append((self.memory.relationship[c], label))
+            if c in self.memory.skipgram_frames:
+                for frame in self.memory.skipgram_frames[c]:
+                    reward_list.append((frame, label))
 
         self.memory.group_remove(to_del)
 
@@ -167,7 +175,7 @@ class LiBVocabulariser:
     def memorize(
         self,
         to_memorize: set,
-        to_get: Optional[Word],
+        to_get: Optional[VocabEntry],
         reward_list: list,
     ):
         if to_get and not self.memory.search(to_get):
@@ -264,18 +272,19 @@ class LiBVocabulariser:
                     i += 1
 
             if self._use_skip:
-                chunks_in_sent = ['[bos]'] + chunks_in_sent + ['[eos]']
-                for a,b in zip(chunks_in_sent[:-2], chunks_in_sent[2:]):
+                chunks_in_sent = [Bound.BOS] + chunks_in_sent + [Bound.EOS]
+                for a, b in zip(chunks_in_sent[:-2], chunks_in_sent[2:]):
                     if random.random() < (self._memory_in * self._memory_in):
-                        self.memorize(to_memorize, ('skipgram', a,b), reward_list)
+                        self.memorize(to_memorize, SkipGram(a, b), reward_list)
 
                 while True:
                     skip_gram, skip, chunks_in_sent = self.memory.skipgram_match(chunks_in_sent)
                     if skip is not None and len(skip) > 1:
                         skip = ''.join(skip)
-                        if (len(skip) <= self._mini_gap) and (random.random() < self._memory_in):
+                        if len(skip) <= self._mini_gap and random.random() < self._memory_in:
+                            frame = SkipGram(skip_gram[0], skip_gram[1])
+                            self.memory.skipgram_frames.setdefault(skip, set()).add(frame)
                             if not self.memory.search(skip):
-                                self.memory.relationship[skip] = ('skipgram', *skip_gram)
                                 self.memory.append(skip)
                     if chunks_in_sent == None:
                         break
@@ -293,37 +302,22 @@ class LiBVocabulariser:
 
         return covered_rate, len(doc_covered_all)/chunk_in_use, mem_usage, in_count
 
-    def get_f1(
-        self,
-        references: Sequence[Sequence[str]],
-        candidates: Sequence[Sequence[str]],
-    ) -> tuple[float, float, float]:
-        gold_chunk = est_chunk = correct_chunk = 0
-        for gold_sentence, estimated_sentence in zip(references, candidates):
-            gold_chunk += len(gold_sentence)
-            est_chunk += len(estimated_sentence)
-            gold_chunk_set = set(gold_sentence)
-            correct_chunk += sum(im in gold_chunk_set for im in estimated_sentence)
-        pre = correct_chunk / est_chunk
-        rec = correct_chunk / gold_chunk
-        f1 = 2 * pre * rec / (pre + rec)
-        return pre, rec, f1
-
     def run(self, epochs: int, corpus_train: Corpus, corpus_test: Corpus):
         for epoch_id in range(epochs):
             self.training_step(epoch_id, corpus_train, corpus_test)
 
-    def training_step(
-        self, epoch_id: int, corpus_train: Corpus, corpus_test: Corpus
-    ):
+    def training_step(self, epoch_id: int, corpus_train: Corpus, corpus_test: Corpus):
         """
         Samples one document from the train set, does a training step, then potentially evaluates.
         """
         document = corpus_train.sample()
         covered_rate, avg_chunk_len, mem_usage, in_count = self.reading(document)
 
-        # Every 100 epochs, you run validation-set statistics.
-        if epoch_id % 100 == 0:
+        if epoch_id % self._eval_interval == 0:  # Every 100 epochs, you run validation-set statistics.
+            self.eval_step(corpus_test, latest_epoch=epoch_id, latest_covered_rate=covered_rate, latest_mem_usage=mem_usage)
+
+    def eval_step(self, corpus_test: Corpus,
+                  latest_epoch: int, latest_covered_rate, latest_mem_usage):
             @dataclass
             class ValidationStats:
                 mem_length: list[int]
@@ -337,8 +331,8 @@ class LiBVocabulariser:
 
             stats = ValidationStats([], [], [], [], [], [], [])
             stats.mem_length.append(len(self.memory))
-            stats.covered.append(covered_rate)
-            stats.mem_usage.append(mem_usage)
+            stats.covered.append(latest_covered_rate)
+            stats.mem_usage.append(latest_mem_usage)
 
             for document in corpus_test.documents:
                 chunk_pos_0 = set(accumulate([len(pretoken) for sentence in document.sentences for pretoken in sentence.words]))
@@ -347,10 +341,9 @@ class LiBVocabulariser:
                 precision_1 = len(chunk_pos_0&chunk_pos)/len(chunk_pos)
                 recall_1 = len(chunk_pos_0&chunk_pos)/len(chunk_pos_0)
 
-                chunks_0 = [sentence.words for sentence in document.sentences]
-
+                reference_chunks = [sentence.words for sentence in document.sentences]
                 chunks = self.segmenter.segment(document, return_chunks=True, comb_sents=False, decompose=True)
-                precision_2, recall_2, f1_2 = self.get_f1(chunks_0, chunks)
+                precision_2, recall_2, f1_2 = self.get_micro_f1(reference_chunks, chunks)
 
                 stats.pr1.append(precision_1)
                 stats.re1.append(recall_1)
@@ -360,7 +353,20 @@ class LiBVocabulariser:
             precision_1, recall_1, precision_2, recall_2 = float(np.mean(stats.pr1)), float(np.mean(stats.re1)), float(np.mean(stats.pr2)), float(np.mean(stats.re2))
             self.memory_log.append([time.time(), 2*precision_2*recall_2/(precision_2+recall_2),len(self.memory)])
 
-            print(f'{epoch_id}\t  MemLength: {int(np.mean(stats.mem_length))}')
+            print(f'{latest_epoch}\t  MemLength: {int(np.mean(stats.mem_length))}')
             print(f'[B] Precision: {precision_1*100:.2f}% \t Recall: {recall_1*100:.2f}% \t F1: {2*precision_1*recall_1/(precision_1+recall_1)*100:.2f}%')
             print(f'[L] Precision: {precision_2*100:.2f}% \t Recall: {recall_2*100:.2f}% \t F1: {2*precision_2*recall_2/(precision_2+recall_2)*100:.2f}%')
             print()
+
+    def get_micro_f1(self, references: Sequence[Sequence[str]], candidates: Sequence[Sequence[str]]) -> tuple[float, float, float]:
+        n_references = n_candidates = n_correct = 0
+        for reference_tokens, candidate_tokens in zip(references, candidates):
+            n_references += len(reference_tokens)
+            n_candidates += len(candidate_tokens)
+            gold_chunk_set = set(reference_tokens)
+            n_correct += sum(token in gold_chunk_set
+                             for token in candidate_tokens)
+        pre = n_correct / n_candidates
+        rec = n_correct / n_references
+        f1 = 2 * pre * rec / (pre + rec)
+        return pre, rec, f1

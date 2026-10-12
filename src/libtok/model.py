@@ -1,7 +1,7 @@
 from itertools import accumulate
 from typing import Counter as CounterType, Iterable, Optional, Sequence
 
-from .structures import Corpus, Document, TrieList, Word
+from .structures import Corpus, Document, TrieList, VocabEntry
 from .vocabularisation import LiBVocabulariser
 from .visualisation import LiBVisualiser
 
@@ -68,7 +68,7 @@ class LessIsBetter:
     def memorize(
         self,
         to_memorize: set,
-        to_get: Optional[Word],
+        to_get: Optional[VocabEntry],
         reward_list: list,
     ):
         return self.vocabulariser.memorize(to_memorize, to_get, reward_list)
@@ -82,7 +82,7 @@ class LessIsBetter:
         references: Sequence[Sequence[str]],
         candidates: Sequence[Sequence[str]],
     ) -> tuple[float, float, float]:
-        return self.vocabulariser.get_f1(references, candidates)
+        return self.vocabulariser.get_micro_f1(references, candidates)
 
     def run(self, epochs: int, corpus_train: Corpus, corpus_test: Corpus):
         return self.vocabulariser.run(epochs, corpus_train, corpus_test)
