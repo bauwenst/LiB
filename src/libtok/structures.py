@@ -1,10 +1,5 @@
 from dataclasses import dataclass
-
-from itertools import chain
-from collections import Counter
-import numpy as np
 import numpy.random as npr
-import numba
 
 
 @dataclass
@@ -456,27 +451,6 @@ class TrieList:
         self.par_list[key] = value
 
     def debug(self, mode):
-        if mode == 'dict not root':
-            return [i for i in self.par_dict if not self.match(i)==i]
-        elif mode == 'dict not list':
-            return [i for i in self.par_dict if i not in self.par_list]
-        elif mode == 'list not root':
-            return [i for i in self.par_list if not self.match(i)==i]
-        elif mode == 'list not dict':
-            return [i for i in self.par_list if i not in self.par_dict]
-        else:            
-            chunks = []
-            curNode = self.root
-
-            def f(pre, curNode):
-                for i in curNode:
-                    if i!=-1:
-                        f(pre+i, curNode[i])
-                    else:
-                        chunks.append(pre)
-            f('', curNode)
-            if mode == 'root not list':
-                li = [i if isinstance(i,str) else ''.join(i) for i in self.par_list]
-            elif mode == 'root not dict':
-                li = [i if isinstance(i,str) else ''.join(i) for i in self.par_dict]
-            return [i for i in chunks if i not in li]
+        from .visualisation import Visualiser
+        from .segmentation import TwoGreedySegmenter
+        return Visualiser(TwoGreedySegmenter(self), self).debug_lexicon(self, mode=mode)
