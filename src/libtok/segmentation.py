@@ -6,63 +6,62 @@ from .structures import Document, TrieList
 class TwoGreedySegmenter:
     """Two-greedy segmentation over a ranked lexicon (TrieList)."""
 
-    def __init__(self, lexicon: TrieList):
+    def __init__(self, lexicon: TrieList, refinement_level: int=0):
         self.lexicon = lexicon
+        self._refinement_level = refinement_level
 
-    def find_subs(self, large_chunk: str, level: int = 2) -> tuple[str, ...]:
+    def refine(self, large_chunk: str, level: int) -> tuple[str, ...]:
         """
         Decompose a chunk into ranked subchunks (paper §4.1).
 
         Among splits of ``large_chunk`` into two lexicon types ``(c1, c2)``,
         choose the split with the lowest pair of ordinals. Recurse up to
         ``level`` if both halves outrank the original chunk; otherwise keep
-        ``large_chunk`` intact. Used when ``decompose=True`` in ``segment`` /
-        ``show_reading`` (e.g. word-like units inside multi-word chunks).
+        ``large_chunk`` intact.
 
         Parameters
         ----------
         large_chunk :
             Chunk string to split.
         level :
-            Recursion depth. ``1`` returns at most one binary split; the default
-            ``2`` may split each half once more.
+            Recursion depth. ``1`` returns at most one binary split; passing in ``2`` may split each half once more.
 
         Returns
         -------
         tuple of str
             Ordered subchunks, or ``(large_chunk,)`` if no better split exists.
         """
+        subs: list[tuple[str,str,tuple[int,int]]] = []
+        index_to_beat = self.lexicon.index_with_prior(large_chunk, nothing=len(self.lexicon))
+
         chunk_1 = large_chunk
-
-        subs = []
         while True:
-            chunk_1 = self.lexicon.match(chunk_1[:-1])
-            chunk_2 = large_chunk[len(chunk_1):]
-
-            if chunk_1!='' and chunk_2 in self.lexicon:
-                subs.append((chunk_1, chunk_2, (self.lexicon.index_with_prior(chunk_1), self.lexicon.index_with_prior(chunk_2))))
             if len(chunk_1) <= 1:
                 break
 
+            chunk_1 = self.lexicon.match(chunk_1[:-1])
+            if not chunk_1:
+                break
+
+            chunk_2 = large_chunk[len(chunk_1):]
+            if chunk_2 in self.lexicon:
+                i1 = self.lexicon.index_with_prior(chunk_1)
+                i2 = self.lexicon.index_with_prior(chunk_2)
+                if i1 < index_to_beat and i2 < index_to_beat:
+                    subs.append((chunk_1, chunk_2, (i1,i2)))
+
         if len(subs) > 0:
-            sub = sorted(subs, key=lambda x:x[2])[0]
-            if max(sub[2]) < self.lexicon.index_with_prior(large_chunk, nothing=len(self.lexicon)):
-                if level == 1:
-                    return sub[:2]
-                else:
-                    return self.find_subs(sub[0], level-1) + self.find_subs(sub[1], level-1)
-            else:
-                return (large_chunk,)
-        else:
-            return (large_chunk,)
+            best_left, best_right, best_score = min(subs, key=lambda x: x[2])
+            return (best_left, best_right) if level == 1 else self.refine(best_left, level - 1) + self.refine(best_right, level - 1)
+
+        return (large_chunk,)
 
     def segment(
         self,
         article: Document,
         max_len: int = 10,
-        decompose: bool = False,
         return_chunks: bool = False,
-        comb_sents: bool = True,
+        flatten: bool = True,
     ):
         """
         Two-greedy segmentation of a document with the current ranked lexicon.
@@ -79,12 +78,10 @@ class TwoGreedySegmenter:
         max_len :
             Maximum match window in characters (historical default ``10``,
             independent of the trainer's ``max_len``).
-        decompose :
-            If True, run ``find_subs`` on each committed chunk.
         return_chunks :
             If True, return chunk strings; if False, return boundary positions
             (cumulative character offsets) as a ``set``.
-        comb_sents :
+        flatten :
             If True, flatten sentence-level chunk lists into one sequence
             before returning.
 
@@ -161,13 +158,13 @@ class TwoGreedySegmenter:
 
             chunks.append(sent_chunks)
 
-        if decompose:
-            chunks = [[sub_c for c in sent for sub_c in self.find_subs(c)] for sent in chunks]
+        if self._refinement_level > 0:
+            chunks = [[sub_c
+                       for c in sent
+                       for sub_c in self.refine(c, level=self._refinement_level)]
+                       for sent in chunks]
 
-        if comb_sents:
+        if flatten:
             chunks = [c for sent in chunks for c in sent]
 
-        if return_chunks:
-            return chunks
-        else:
-            return set(accumulate([len(c) for c in chunks]))
+        return chunks if return_chunks else set(accumulate([len(c) for c in chunks]))

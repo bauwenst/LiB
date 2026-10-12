@@ -24,6 +24,7 @@ class LiBVocabulariser:
         update_rate: float = 0.2,
         mini_gap: int = 2,
         use_skip: bool = False,
+        segmentation_refinement: int = 2,
 
         eval_interval: int = 100,
     ):
@@ -77,17 +78,13 @@ class LiBVocabulariser:
         self.to_dropout = dict()
         self.memory = TrieList()
         self.memory_log = []
-        self.segmenter = TwoGreedySegmenter(self.memory)
+        self.segmenter = TwoGreedySegmenter(self.memory, refinement_level=segmentation_refinement)
 
     def initialise(self, corpus_samples: Iterable[Iterable[str]]):
         self.to_dropout.clear()
         for i in set([i for j in corpus_samples for i in j]):
             self.memory.append(i)
             self.to_dropout[i] = self._life
-
-    def eval_memorizer(self, doc_covered: Sequence[int]):
-        return (1-sum([i==0 for i in doc_covered])/len(doc_covered),
-                [(key, len(list(group))) for key, group in groupby(doc_covered)])
 
     def dropout(
         self,
@@ -295,7 +292,8 @@ class LiBVocabulariser:
 
         self.batch_update_memory(reward_list, used_chunks)
 
-        covered_rate, chunk_groups = self.eval_memorizer(doc_covered_all)
+        covered_rate = 1 - sum(i==0 for i in doc_covered_all) / len(doc_covered_all)
+        chunk_groups = [(key, len(list(group))) for key, group in groupby(doc_covered_all)]
         chunk_in_use = sum([g_len if key==0 else 1 for key, g_len in chunk_groups])
 
         mem_usage = len(set(used_chunks.keys()) & set(self.memory)) / len(self.memory)
@@ -317,7 +315,7 @@ class LiBVocabulariser:
             self.eval_step(corpus_test, latest_epoch=epoch_id, latest_covered_rate=covered_rate, latest_mem_usage=mem_usage)
 
     def eval_step(self, corpus_test: Corpus,
-                  latest_epoch: int, latest_covered_rate, latest_mem_usage):
+                  latest_epoch: int, latest_covered_rate: float, latest_mem_usage: float):
             @dataclass
             class ValidationStats:
                 mem_length: list[int]
@@ -337,12 +335,12 @@ class LiBVocabulariser:
             for document in corpus_test.documents:
                 chunk_pos_0 = set(accumulate([len(pretoken) for sentence in document.sentences for pretoken in sentence.words]))
 
-                chunk_pos = self.segmenter.segment(document, decompose=True)
+                chunk_pos = self.segmenter.segment(document)
                 precision_1 = len(chunk_pos_0&chunk_pos)/len(chunk_pos)
                 recall_1 = len(chunk_pos_0&chunk_pos)/len(chunk_pos_0)
 
                 reference_chunks = [sentence.words for sentence in document.sentences]
-                chunks = self.segmenter.segment(document, return_chunks=True, comb_sents=False, decompose=True)
+                chunks = self.segmenter.segment(document, return_chunks=True, flatten=False)
                 precision_2, recall_2, f1_2 = self.get_micro_f1(reference_chunks, chunks)
 
                 stats.pr1.append(precision_1)

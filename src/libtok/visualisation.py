@@ -22,8 +22,8 @@ class LiBVisualiser:
             for concatenated_sentence in chunks:
                 print(' '.join(concatenated_sentence))
 
-    def show_result(self, article: Document, decompose: bool = False):
-        chunk_pos = self.segmenter.segment(article, decompose=decompose)
+    def show_result(self, article: Document):
+        chunk_pos = self.segmenter.segment(article)
         chunk_pos_0 = set(accumulate([len(pretoken) for sentence in article.sentences for pretoken in sentence.words]))
 
         doc = ''.join([sentence.cat() for sentence in article.sentences])
@@ -55,15 +55,14 @@ class LiBVisualiser:
     def demo(
         self,
         article: Document,
-        decompose: bool = False,
         section: tuple[int, Optional[int]] = (0, None),
     ):
         start_sentence_idx, end_sentence_idx = section
         sliced = Document(sentences=article.sentences[start_sentence_idx:end_sentence_idx])
-        self.show_result(sliced, decompose=decompose)
+        self.show_result(sliced)
 
-    def show_result_with_idx(self, article: Document, decompose: bool = False):
-        chunk_pos = self.segmenter.segment(article, decompose=decompose)
+    def show_result_with_idx(self, article: Document):
+        chunk_pos = self.segmenter.segment(article)
         chunk_pos_0 = set(accumulate([len(pretoken) for sentence in article.sentences for pretoken in sentence.words]))
 
         doc = ''.join(sentence.cat() for sentence in article.sentences)
@@ -145,7 +144,6 @@ class LiBVisualiser:
         self,
         article: Document,
         max_len: int = 10,
-        decompose: bool = False,
         display: bool = False,
         return_chunks: bool = False,
         comb_sents: bool = True,
@@ -162,8 +160,6 @@ class LiBVisualiser:
             Document to segment.
         max_len :
             Match window in characters (default ``10``).
-        decompose :
-            If True, decompose chunks with ``find_subs``.
         display :
             If True, print the segmentation (space-separated chunks).
         return_chunks :
@@ -179,9 +175,8 @@ class LiBVisualiser:
         chunks = self.segmenter.segment(
             article,
             max_len=max_len,
-            decompose=decompose,
             return_chunks=True,
-            comb_sents=comb_sents,
+            flatten=comb_sents,
         )
         if display:
             self.display_segmentation(chunks, comb_sents=comb_sents)

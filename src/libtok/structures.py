@@ -199,19 +199,13 @@ class TrieList:
     def index(self, word: VocabEntry) -> int:
         return self.types_sorted.index(word)
 
-    def index_with_prior(self, word: VocabEntry, offset: int = 0, nothing: Union[bool, int] = False) -> Union[int, bool]:
+    def index_with_prior(self, word: VocabEntry, offset: int=0, nothing: Optional[int]=None) -> Optional[int]:
         try:
             prior_ind = self.types_indexed[word]
-            if offset == 0:
-                return self.types_sorted.index(word, prior_ind)
-            else:
-                start = prior_ind - offset 
-                if start < 0:
-                    start = 0
-                return self.types_sorted.index(word, start)
+            return self.types_sorted.index(word, max(0, prior_ind - offset))
         except:
-            if nothing==False:
-                raise
+            if nothing is None:
+                raise KeyError(word)
             return nothing
 
     def update_ind(self):
