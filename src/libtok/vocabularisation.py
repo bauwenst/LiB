@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Counter as CounterType, Iterable, Optional, Sequence
+from typing import Counter as CounterType, Iterable, Optional, Sequence, Union
 
 from collections import Counter
 from itertools import accumulate, groupby
@@ -9,6 +9,14 @@ import time
 
 from .segmentation import TwoGreedySegmenter
 from .structures import Bound, Corpus, Document, SkipGram, TrieList, VocabEntry
+
+
+@dataclass
+class TrainingEpochStats:
+    covered_rate: float          # Fraction of character positions covered by at least one known chunk.
+    average_chunk_length: float  # Characters per effective chunk group (working-memory load proxy).
+    memory_usage: float          # Fraction of lexicon types that appeared in this document's segmentation.
+    in_count: int                # Net number of types appended to the lexicon during this pass (before forgetting removals in ``batch_update_memory``).
 
 
 class LiBVocabulariser:
@@ -182,7 +190,7 @@ class LiBVocabulariser:
             else:
                 to_memorize.add(to_get)
 
-    def reading(self, article: Document):
+    def train_epoch(self, examples: Union[Document,Iterable[str]]) -> TrainingEpochStats:
         """
         One training pass over a document: segment, memorise, evaluate, update.
 
@@ -196,35 +204,18 @@ class LiBVocabulariser:
 
         Parameters
         ----------
-        article :
-            Document whose sentences are concatenated per sentence and read in
-            order.
-
-        Returns
-        -------
-        covered_rate : float
-            Fraction of character positions covered by at least one known chunk.
-        avg_chunk_len : float
-            Characters per effective chunk group (working-memory load proxy).
-        mem_usage : float
-            Fraction of lexicon types that appeared in this document's
-            segmentation.
-        in_count : int
-            Net number of types appended to the lexicon during this pass
-            (before forgetting removals in ``batch_update_memory``).
+        examples :
+            Spaceless sentences.
         """
         used_chunks = Counter()
 
         doc_covered_all = []
         reward_list = []
-        punish_list= []
+        punish_list = []
         to_memorize = set()
-        l_memory_size = len(self.memory)
-        new_memorized = Counter()
+        old_memory_size = len(self.memory)
 
-        for sentence in article.sentences:
-            concatenated_sentence = sentence.cat()
-
+        for concatenated_sentence in ((sentence.cat() for sentence in examples.sentences) if isinstance(examples, Document) else examples):
             chunks_in_sent = []
             singles = []
             to_test = dict()
@@ -288,7 +279,7 @@ class LiBVocabulariser:
 
             doc_covered_all += sent_covered
 
-        in_count = len(self.memory) - l_memory_size
+        in_count = len(self.memory) - old_memory_size
 
         self.batch_update_memory(reward_list, used_chunks)
 
@@ -298,24 +289,24 @@ class LiBVocabulariser:
 
         mem_usage = len(set(used_chunks.keys()) & set(self.memory)) / len(self.memory)
 
-        return covered_rate, len(doc_covered_all)/chunk_in_use, mem_usage, in_count
+        return TrainingEpochStats(
+            covered_rate=covered_rate,
+            average_chunk_length=len(doc_covered_all) / chunk_in_use,
+            memory_usage=mem_usage,
+            in_count=in_count
+        )
+
+    ####################################################################################################################
 
     def run(self, epochs: int, corpus_train: Corpus, corpus_test: Corpus):
         for epoch_id in range(epochs):
-            self.training_step(epoch_id, corpus_train, corpus_test)
+            document = corpus_train.sample()
+            stats = self.train_epoch(document)
+            if epoch_id % self._eval_interval == 0:  # Every 100 epochs, you run validation-set statistics.
+                self.eval_epoch(corpus_test, latest_epoch=epoch_id, latest_stats=stats)
 
-    def training_step(self, epoch_id: int, corpus_train: Corpus, corpus_test: Corpus):
-        """
-        Samples one document from the train set, does a training step, then potentially evaluates.
-        """
-        document = corpus_train.sample()
-        covered_rate, avg_chunk_len, mem_usage, in_count = self.reading(document)
-
-        if epoch_id % self._eval_interval == 0:  # Every 100 epochs, you run validation-set statistics.
-            self.eval_step(corpus_test, latest_epoch=epoch_id, latest_covered_rate=covered_rate, latest_mem_usage=mem_usage)
-
-    def eval_step(self, corpus_test: Corpus,
-                  latest_epoch: int, latest_covered_rate: float, latest_mem_usage: float):
+    def eval_epoch(self, corpus_test: Corpus,
+                   latest_epoch: int, latest_stats: TrainingEpochStats):
             @dataclass
             class ValidationStats:
                 mem_length: list[int]
@@ -327,10 +318,11 @@ class LiBVocabulariser:
                 pr2: list[float]
                 re2: list[float]
 
+            # TODO: Makes very little sense to have lists for these but never actually append more than one measurement.
             stats = ValidationStats([], [], [], [], [], [], [])
             stats.mem_length.append(len(self.memory))
-            stats.covered.append(latest_covered_rate)
-            stats.mem_usage.append(latest_mem_usage)
+            stats.covered.append(latest_stats.covered_rate)
+            stats.mem_usage.append(latest_stats.memory_usage)
 
             for document in corpus_test.documents:
                 chunk_pos_0 = set(accumulate([len(pretoken) for sentence in document.sentences for pretoken in sentence.words]))
