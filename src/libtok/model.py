@@ -1,8 +1,9 @@
 from itertools import accumulate
+from typing import Counter as CounterType, Iterable, Optional, Sequence
 
-from .structures import Corpus, Document
-from .vocabularisation import Vocabulariser
-from .visualisation import Visualiser
+from .structures import Corpus, Document, TrieList, Word
+from .vocabularisation import LiBVocabulariser
+from .visualisation import LiBVisualiser
 
 
 class LessIsBetter:
@@ -20,7 +21,7 @@ class LessIsBetter:
         use_skip: bool = False
     ):
         """Arguments explained in Vocabulariser.__init__()"""
-        self.vocabulariser = Vocabulariser(
+        self.vocabulariser = LiBVocabulariser(
             life=life,
             max_len=max_len,
             memory_in=memory_in,
@@ -30,53 +31,80 @@ class LessIsBetter:
             use_skip=use_skip,
         )
         self.segmenter = self.vocabulariser.segmenter
-        self.visualiser = Visualiser(self.segmenter, self.vocabulariser.memory)
+        self.visualiser = LiBVisualiser(self.segmenter, self.vocabulariser.memory)
 
     @property
-    def memory(self):
+    def memory(self) -> TrieList:
         return self.vocabulariser.memory
 
     @property
-    def memory_log(self):
+    def memory_log(self) -> list:
         return self.vocabulariser.memory_log
 
     @property
-    def to_dropout(self):
+    def to_dropout(self) -> dict:
         return self.vocabulariser.to_dropout
 
-    def initialise(self, corpus_samples):
+    def initialise(self, corpus_samples: Iterable[Iterable[str]]):
         return self.vocabulariser.initialise(corpus_samples)
 
-    def eval_memorizer(self, doc_covered):
+    def eval_memorizer(self, doc_covered: Sequence[int]):
         return self.vocabulariser.eval_memorizer(doc_covered)
 
-    def dropout(self, to_test, doc, doc_covered, doc_loc, reward_list, strict=False):
+    def dropout(
+        self,
+        to_test: dict,
+        doc: str,
+        doc_covered: Sequence[int],
+        doc_loc: int,
+        reward_list: list,
+        strict: bool = False,
+    ):
         return self.vocabulariser.dropout(to_test, doc, doc_covered, doc_loc, reward_list, strict=strict)
 
-    def batch_update_memory(self, reward_list, used_chunks):
+    def batch_update_memory(self, reward_list: list, used_chunks: CounterType):
         return self.vocabulariser.batch_update_memory(reward_list, used_chunks)
 
-    def memorize(self, to_memorize, to_get, reward_list):
+    def memorize(
+        self,
+        to_memorize: set,
+        to_get: Optional[Word],
+        reward_list: list,
+    ):
         return self.vocabulariser.memorize(to_memorize, to_get, reward_list)
 
     def reading(self, article: Document):
         """See ``Vocabulariser.reading``."""
         return self.vocabulariser.reading(article)
 
-    def get_f1(self, references, candidates):
+    def get_f1(
+        self,
+        references: Sequence[Sequence[str]],
+        candidates: Sequence[Sequence[str]],
+    ) -> tuple[float, float, float]:
         return self.vocabulariser.get_f1(references, candidates)
 
     def run(self, epochs: int, corpus_train: Corpus, corpus_test: Corpus):
         return self.vocabulariser.run(epochs, corpus_train, corpus_test)
 
-    def training_step(self, epoch_id: int, corpus_train: Corpus, corpus_test: Corpus):
+    def training_step(
+        self, epoch_id: int, corpus_train: Corpus, corpus_test: Corpus
+    ):
         return self.vocabulariser.training_step(epoch_id, corpus_train, corpus_test)
 
-    def find_subs(self, large_chunk, level=2):
+    def find_subs(self, large_chunk: str, level: int = 2) -> tuple[str, ...]:
         """See ``TwoGreedySegmenter.find_subs``."""
         return self.segmenter.find_subs(large_chunk, level=level)
 
-    def show_reading(self, article: Document, max_len=10, decompose=False, display=False, return_chunks=False, comb_sents=True):
+    def show_reading(
+        self,
+        article: Document,
+        max_len: int = 10,
+        decompose: bool = False,
+        display: bool = False,
+        return_chunks: bool = False,
+        comb_sents: bool = True,
+    ):
         """
         Inference-time segmentation of ``article`` (legacy name for ``segment``).
 
@@ -117,11 +145,16 @@ class LessIsBetter:
         else:
             return set(accumulate([len(c) for c in chunks]))
 
-    def show_result(self, article: Document, decompose=False):
+    def show_result(self, article: Document, decompose: bool = False):
         return self.visualiser.show_result(article, decompose=decompose)
 
-    def demo(self, article: Document, decompose=False, section=(0, None)):
+    def demo(
+        self,
+        article: Document,
+        decompose: bool = False,
+        section: tuple[int, Optional[int]] = (0, None),
+    ):
         return self.visualiser.demo(article, decompose=decompose, section=section)
 
-    def show_result_with_idx(self, article: Document, decompose=False):
+    def show_result_with_idx(self, article: Document, decompose: bool = False):
         return self.visualiser.show_result_with_idx(article, decompose=decompose)

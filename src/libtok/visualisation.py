@@ -1,24 +1,28 @@
 from itertools import accumulate
-from typing import Optional
+from typing import Optional, Sequence, Union
 
 from .segmentation import TwoGreedySegmenter
 from .structures import Document, TrieList
 
 
-class Visualiser:
+class LiBVisualiser:
 
     def __init__(self, segmenter: TwoGreedySegmenter, lexicon: TrieList):
         self.segmenter = segmenter
         self.lexicon = lexicon
 
-    def display_segmentation(self, chunks, comb_sents=True):
+    def display_segmentation(
+        self,
+        chunks: Union[Sequence[str], Sequence[Sequence[str]]],
+        comb_sents: bool = True,
+    ):
         if comb_sents:
             print(' '.join(chunks))
         else:
             for concatenated_sentence in chunks:
                 print(' '.join(concatenated_sentence))
 
-    def show_result(self, article: Document, decompose=False):
+    def show_result(self, article: Document, decompose: bool = False):
         chunk_pos = self.segmenter.segment(article, decompose=decompose)
         chunk_pos_0 = set(accumulate([len(pretoken) for sentence in article.sentences for pretoken in sentence.words]))
 
@@ -48,12 +52,17 @@ class Visualiser:
                 i += 1
                 j += 1
 
-    def demo(self, article: Document, decompose=False, section=(0,None)):
+    def demo(
+        self,
+        article: Document,
+        decompose: bool = False,
+        section: tuple[int, Optional[int]] = (0, None),
+    ):
         start_sentence_idx, end_sentence_idx = section
         sliced = Document(sentences=article.sentences[start_sentence_idx:end_sentence_idx])
         self.show_result(sliced, decompose=decompose)
 
-    def show_result_with_idx(self, article: Document, decompose=False):
+    def show_result_with_idx(self, article: Document, decompose: bool = False):
         chunk_pos = self.segmenter.segment(article, decompose=decompose)
         chunk_pos_0 = set(accumulate([len(pretoken) for sentence in article.sentences for pretoken in sentence.words]))
 
@@ -101,7 +110,9 @@ class Visualiser:
                 i += 1
                 j += 1
 
-    def debug_lexicon(self, lexicon: Optional[TrieList] = None, mode='dict not root'):
+    def debug_lexicon(
+        self, lexicon: Optional[TrieList] = None, mode: str = 'dict not root'
+    ) -> list:
         if lexicon is None:
             lexicon = self.lexicon
         if mode == 'dict not root':

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Counter as CounterType, Iterable, Optional, Sequence
 
 from collections import Counter
 from itertools import accumulate, groupby
@@ -8,10 +8,10 @@ import numpy as np
 import time
 
 from .segmentation import TwoGreedySegmenter
-from .structures import TrieList, Corpus, Document
+from .structures import TrieList, Corpus, Document, Word
 
 
-class Vocabulariser:
+class LiBVocabulariser:
     """Online LiB lexicon trainer: builds a ranked vocabulary by reading documents."""
 
     def __init__(
@@ -72,17 +72,25 @@ class Vocabulariser:
         self.memory_log = []
         self.segmenter = segmenter if segmenter is not None else TwoGreedySegmenter(self.memory)
 
-    def initialise(self, corpus_samples):
+    def initialise(self, corpus_samples: Iterable[Iterable[str]]):
         self.to_dropout.clear()
         for i in set([i for j in corpus_samples for i in j]):
             self.memory.append(i)
             self.to_dropout[i] = self._life
 
-    def eval_memorizer(self, doc_covered):
+    def eval_memorizer(self, doc_covered: Sequence[int]):
         return (1-sum([i==0 for i in doc_covered])/len(doc_covered),
                 [(key, len(list(group))) for key, group in groupby(doc_covered)])
 
-    def dropout(self, to_test, doc, doc_covered, doc_loc, reward_list, strict=False):
+    def dropout(
+        self,
+        to_test: dict,
+        doc: str,
+        doc_covered: Sequence[int],
+        doc_loc: int,
+        reward_list: list,
+        strict: bool = False,
+    ):
         for chunk_to_test in list(to_test.keys()):
             if strict and not self.memory.search(chunk_to_test):
                 del to_test[chunk_to_test]
@@ -126,7 +134,11 @@ class Vocabulariser:
             else:
                 to_test[chunk_to_test] = onset, end, N_unknowns, N_chunks, chunks_list_0, chunks_list
 
-    def batch_update_memory(self, reward_list, used_chunks):
+    def batch_update_memory(
+        self,
+        reward_list: list,
+        used_chunks: CounterType,
+    ):
         to_del = []
         for chunk_to_test in list(self.to_dropout.keys()):
             current_life = self.to_dropout[chunk_to_test]
@@ -152,7 +164,12 @@ class Vocabulariser:
             if chunk_t not in self.to_dropout:
                 self.to_dropout[chunk_t] = self._life
 
-    def memorize(self, to_memorize, to_get, reward_list):
+    def memorize(
+        self,
+        to_memorize: set,
+        to_get: Optional[Word],
+        reward_list: list,
+    ):
         if to_get and not self.memory.search(to_get):
             if to_get in to_memorize:
                 to_memorize.remove(to_get)
@@ -276,7 +293,11 @@ class Vocabulariser:
 
         return covered_rate, len(doc_covered_all)/chunk_in_use, mem_usage, in_count
 
-    def get_f1(self, references, candidates):
+    def get_f1(
+        self,
+        references: Sequence[Sequence[str]],
+        candidates: Sequence[Sequence[str]],
+    ) -> tuple[float, float, float]:
         gold_chunk = est_chunk = correct_chunk = 0
         for gold_sentence, estimated_sentence in zip(references, candidates):
             gold_chunk += len(gold_sentence)
@@ -292,7 +313,9 @@ class Vocabulariser:
         for epoch_id in range(epochs):
             self.training_step(epoch_id, corpus_train, corpus_test)
 
-    def training_step(self, epoch_id: int, corpus_train: Corpus, corpus_test: Corpus):
+    def training_step(
+        self, epoch_id: int, corpus_train: Corpus, corpus_test: Corpus
+    ):
         """
         Samples one document from the train set, does a training step, then potentially evaluates.
         """

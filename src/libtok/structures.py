@@ -1,5 +1,10 @@
 from dataclasses import dataclass
+from typing import Any, Iterable, Optional, Sequence, Union
+
 import numpy.random as npr
+from numpy.random import Generator as RNG
+
+Word = Union[str, tuple[str,...]]
 
 
 @dataclass
@@ -19,7 +24,7 @@ class Document:
 class Corpus:
     documents: list[Document]
 
-    def sample(self, rng=npr.default_rng(0)) -> Document:
+    def sample(self, rng: RNG = npr.default_rng(0)) -> Document:
         return self.documents[rng.integers(low=0, high=len(self.documents))]
 
 
@@ -37,22 +42,20 @@ class TrieList:
         self.relationship = dict()
         self.root['skipgram'] = dict()
 
-    def insert(self, index, word, note=True):
+    def insert(self, index: int, word: Word, note: Any = True):
         """
         Inserts a word into the trie.
-        :type word: str
-        :rtype: void
         """
-        curNode = self.root
+        cur_node = self.root
         for c in word:
-            if not c in curNode:
-                curNode[c] = {}
-            curNode = curNode[c]
+            if not c in cur_node:
+                cur_node[c] = {}
+            cur_node = cur_node[c]
 
-        if self.word_end in curNode:
+        if self.word_end in cur_node:
             raise Exception(f'already has "{word}"')
         else:
-            curNode[self.word_end] = note
+            cur_node[self.word_end] = note
         
         if index == -1:
             self.par_list.append(word)
@@ -61,28 +64,28 @@ class TrieList:
             self.par_list.insert(index, word)
             self.par_dict[word] = index
        
-    def append(self, word, note=True):
+    def append(self, word: Word, note: Any = True):
         self.insert(-1, word, note)
 
-    def _del(self, word): # delete from the trie and dict
-        curNode = self.root
-        def f(word, curNode):
+    def _del(self, word: Word): # delete from the trie and dict
+        cur_node = self.root
+        def f(word, cur):
             if len(word) == 0:
-                del curNode[-1]
+                del cur[-1]
             else:  
-                f(word[1:], curNode[word[0]])
-                if len(curNode[word[0]]) == 0:
-                    del curNode[word[0]]
+                f(word[1:], cur[word[0]])
+                if len(cur[word[0]]) == 0:
+                    del cur[word[0]]
 
-        f(word, curNode)
+        f(word, cur_node)
         del self.par_dict[word]
     
-    def pop(self, index=-1):
+    def pop(self, index: int = -1) -> Word:
         word = self.par_list.pop(index)
         self._del(word)
         return word
 
-    def exchange(self, i, j):
+    def exchange(self, i: int, j: int):
         self.par_list[j], self.par_list[i] = self.par_list[i], self.par_list[j]
 
     def move(self, i: int, step: int):
@@ -114,7 +117,7 @@ class TrieList:
                 self.par_list[i:] = self.par_list[i+1:]
                 self._del(w)
 
-    def group_move(self, words, update_rate):
+    def group_move(self, words: Iterable[tuple[Word, int]], update_rate: float):
         """
         Apply a sequence of reward/punish events to the ranked lexicon.
 
@@ -144,7 +147,7 @@ class TrieList:
 
         self.update_ind()
 
-    def group_remove(self, words):
+    def group_remove(self, words: Sequence[Word]):
         if len(words) > 0:
             words_ = []
             for w in words: 
@@ -157,10 +160,10 @@ class TrieList:
 
             self.update_ind()
 
-    def index(self, word):
+    def index(self, word: Word) -> int:
         return self.par_list.index(word)
 
-    def index_with_prior(self, word, offset=0, nothing=False):
+    def index_with_prior(self, word: Word, offset: int = 0, nothing: Union[bool, int] = False) -> Union[int, bool]:
         try:
             prior_ind = self.par_dict[word]
             if offset == 0:
@@ -178,66 +181,66 @@ class TrieList:
     def update_ind(self):
         self.par_dict = dict((word,ind) for ind,word in enumerate(self.par_list))
 
-    def remove(self, word):
+    def remove(self, word: Word):
         ind = self.index_with_prior(word)
 
         self._del(word)
         self.par_list[ind: ind + 1] = []
 
-    def be_a_part(self, string):
+    def be_a_part(self, string: str) -> bool:
         if not self.search(string):
             return False
 
-        curNode = self.root
+        cur_node = self.root
         for c in string:
-            curNode = curNode[c]
-        return (len(curNode) > 1)
+            cur_node = cur_node[c]
+        return len(cur_node) > 1
 
-    def startwith(self, string):
+    def startwith(self, string: str) -> list[str]:
         if not self.search(string):
             return []
         
         chunks = []
-        curNode = self.root
+        cur_node = self.root
         for c in string:
-            curNode = curNode[c]
+            cur_node = cur_node[c]
             
-        def f(pre, curNode):
-            if len(curNode) == 1:
+        def f(pre, cur):
+            if len(cur) == 1:
                 chunks.append(pre)
-            for i in curNode:
+            for i in cur:
                 if i!=-1:
-                    f(pre+i, curNode[i])
-        f(string, curNode)
+                    f(pre + i, cur[i])
+        f(string, cur_node)
         return chunks
 
-    def has_a_larger(self, string):
+    def has_a_larger(self, string: str) -> Optional[str]:
         if not self.search(string):
             return None
  
-        curNode = self.root
+        cur_node = self.root
         for c in string:
-            curNode = curNode[c]
+            cur_node = cur_node[c]
             
-        def f(pre, curNode):
-            subs = [i for i in curNode if i!=-1]
+        def f(pre, cur):
+            subs = [i for i in cur if i != -1]
             if len(subs) == 0:
                 return pre
             elif len(subs) == 1:
                 for i in subs:
-                    return f(pre+i, curNode[i])
+                    return f(pre + i, cur[i])
             else:
                 return None
 
-        if curNode == {-1: True}:
+        if cur_node == {-1: True}:
             return None
         else:
-            return f(string, curNode)
+            return f(string, cur_node)
 
-    def search(self, word):
+    def search(self, word: Word) -> bool:
         return word in self.par_dict
 
-    def skipgram_match(self, chunks: list[str]):
+    def skipgram_match(self, chunks: list[str]) -> tuple[Optional[list[str]], Optional[list[str]], Optional[list[str]]]:
         current_node = self.root['skipgram']
         gram = []
 
@@ -258,32 +261,32 @@ class TrieList:
         else:
             return None, None, None
 
-    def match(self, string: str):
-        curNode = self.root
+    def match(self, string: str) -> str:
+        cur_node = self.root
         words = ['','']
         for c in string:
-            if not c in curNode:
-                if -1 in curNode:
+            if not c in cur_node:
+                if -1 in cur_node:
                     return words[-1]
                 else:
                     return words[-2]
                 
-            if -1 in curNode:
+            if -1 in cur_node:
                 words.append(words[-1]) # we know there was a chunk, now we make a new hypothesis
                 
             words[-1] += c
-            curNode = curNode[c]
-        if -1 in curNode:
+            cur_node = cur_node[c]
+        if -1 in cur_node:
             return words[-1]
         else:
             return words[-2]
 
-    def match_two(self, string: str):
-        curNode = self.root
+    def match_two(self, string: str) -> list[str]:
+        cur_node = self.root
         words = ['','']
         for c in string:
-            if not c in curNode:
-                if -1 in curNode:
+            if not c in cur_node:
+                if -1 in cur_node:
                     if len(words) > 1:
                         return words[-2:]
                     else:
@@ -294,35 +297,35 @@ class TrieList:
                     else:
                         return ['','']
 
-            if -1 in curNode:
+            if -1 in cur_node:
                 words.append(words[-1]) # we know there was a chunk, now we make a new hypothesis
 
             words[-1] += c
 
-            curNode = curNode[c]
-        if -1 in curNode:
+            cur_node = cur_node[c]
+        if -1 in cur_node:
             return words[-2:]
         elif len(words) > 2:
             return words[-3:-1]
         else:
             return ['','']
         
-    def match_2nd(self, string):
-        curNode = self.root
+    def match_2nd(self, string: str) -> str:
+        cur_node = self.root
         words = ['','']
         for c in string:
-            if -1 in curNode:
+            if -1 in cur_node:
                 words.append(words[-1]) # we know there was a chunk, now we make a new hypothesis
-            if not c in curNode:
-                if -1 in curNode:
+            if not c in cur_node:
+                if -1 in cur_node:
                     return words[-2]
                 elif len(words) > 3:
                     return words[-3]
                 else:
                     return ''
             words[-1] += c
-            curNode = curNode[c]
-        if -1 in curNode:
+            cur_node = cur_node[c]
+        if -1 in cur_node:
             return words[-2]
         elif len(words) > 3:
             return words[-3]
@@ -332,35 +335,35 @@ class TrieList:
     def __iter__(self):
         return iter(self.par_list)
             
-    def __contains__(self, word):
+    def __contains__(self, word: Word) -> bool:
         return self.search(word)
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return str(self.par_list)
     
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.par_list)
     
-    def __set__(self):
+    def __set__(self) -> set:
         return set(self.par_list)
     
-    def __getitem__(self, key):
+    def __getitem__(self, key: Union[int, slice]) -> Any:
         return self.par_list[key]
     
-    def __setitem__(self, key, value):
+    def __setitem__(self, key: int, value: Word):
         self._del(self.par_list[key])
 
-        curNode = self.root
+        cur_node = self.root
         for c in value:
-            if not c in curNode:
-                curNode[c] = {}
-            curNode = curNode[c]
+            if not c in cur_node:
+                cur_node[c] = {}
+            cur_node = cur_node[c]
           
-        curNode[self.word_end] = True
+        cur_node[self.word_end] = True
 
         self.par_list[key] = value
 
-    def debug(self, mode):
-        from .visualisation import Visualiser
+    def debug(self, mode: str) -> list:
+        from .visualisation import LiBVisualiser
         from .segmentation import TwoGreedySegmenter
-        return Visualiser(TwoGreedySegmenter(self), self).debug_lexicon(self, mode=mode)
+        return LiBVisualiser(TwoGreedySegmenter(self), self).debug_lexicon(self, mode=mode)

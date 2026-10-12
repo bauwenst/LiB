@@ -1,14 +1,14 @@
 from .model import LessIsBetter
 from .segmentation import TwoGreedySegmenter
 from .structures import Corpus, Document, Sentence, TrieList
-from .vocabularisation import Vocabulariser
-from .visualisation import Visualiser
+from .vocabularisation import LiBVocabulariser
+from .visualisation import LiBVisualiser
 
 __all__ = [
     "LessIsBetter",
-    "Vocabulariser",
+    "LiBVocabulariser",
     "TwoGreedySegmenter",
-    "Visualiser",
+    "LiBVisualiser",
     "TrieList",
     "Sentence",
     "Document",

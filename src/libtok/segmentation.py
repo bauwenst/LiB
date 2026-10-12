@@ -9,7 +9,7 @@ class TwoGreedySegmenter:
     def __init__(self, lexicon: TrieList):
         self.lexicon = lexicon
 
-    def find_subs(self, large_chunk, level=2):
+    def find_subs(self, large_chunk: str, level: int = 2) -> tuple[str, ...]:
         """
         Decompose a chunk into ranked subchunks (paper §4.1).
 
@@ -56,13 +56,20 @@ class TwoGreedySegmenter:
         else:
             return (large_chunk,)
 
-    def segment(self, article: Document, max_len=10, decompose=False, return_chunks=False, comb_sents=True):
+    def segment(
+        self,
+        article: Document,
+        max_len: int = 10,
+        decompose: bool = False,
+        return_chunks: bool = False,
+        comb_sents: bool = True,
+    ):
         """
         Two-greedy segmentation of a document with the current ranked lexicon.
 
         At each position, take the longest and second-longest lexicon matches.
         If both exist, compare full continuations (token count, then sum of
-        ordinals) and commit the better path—unlike training ``reading``, which
+        ordinals) and commit the better path — unlike training ``reading``, which
         always commits the primary match and uses the comparison only for rewards.
 
         Parameters
