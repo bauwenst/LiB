@@ -11,11 +11,7 @@ class LiBVisualiser:
         self.segmenter = segmenter
         self.lexicon = lexicon
 
-    def display_segmentation(
-        self,
-        chunks: Union[Sequence[str], Sequence[Sequence[str]]],
-        comb_sents: bool = True,
-    ):
+    def display_segmentation(self, chunks: Union[Sequence[str], Sequence[Sequence[str]]], comb_sents: bool = True):
         if comb_sents:
             print(' '.join(chunks))
         else:

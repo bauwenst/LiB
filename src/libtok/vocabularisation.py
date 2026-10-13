@@ -6,9 +6,20 @@ from itertools import accumulate, groupby
 import random
 import numpy as np
 import time
+import unicodedata
 
 from .segmentation import TwoGreedySegmenter
-from .structures import Bound, Corpus, Document, SkipGram, TrieList, VocabEntry
+from .structures import Bound, Chunk, Corpus, Document, SkipGram, TrieList, VocabEntry
+
+
+@dataclass
+class PathCompetition:
+    onset: int
+    end_so_far: int
+    n_unknowns_on_2nd: int
+    n_chunks_on_2nd: int
+    chunks_on_1st: list[str]
+    chunks_on_2nd: list[str]
 
 
 @dataclass
@@ -20,26 +31,44 @@ class TrainingEpochStats:
 
 
 class LiBVocabulariser:
-    """Online LiB lexicon trainer: builds a ranked vocabulary by reading documents."""
+    """
+    Online LiB lexicon trainer: builds a ranked vocabulary by reading documents.
+
+    Additions from upstream:
+        - Customisable segmentation refinement depth.
+        - Customisable minimum occurrences.
+        - Filter that forbids types from entering the lexicon that are mixes of letters/numbers/punctuation.
+        - Corpus sampling controls (stochasticity, epochs)
+
+    Also fixes multiple bugs that were present in upstream, including:
+        - Whether an UNK string was lexicalised used to be prevented by adding to it a different string's length: https://github.com/ray306/LiB/blob/388248f7306492dcddd67425ea70185c23753986/model.py#L139
+        - In that same check, the actual string's length was being miscomputed as the length of the tuple containing it: https://github.com/ray306/LiB/blob/388248f7306492dcddd67425ea70185c23753986/model.py#L139
+        - In the segmenter, refinement used to stop earlier than necessary due to a check resulting in a false negative.
+        - Soon: path competitions were not resolved once the end of a document was reached.
+        - Soon: path competition wins were not used to segment a document, but rather the greedy segmentation was always used.
+    """
 
     def __init__(
         self,
-        life: int = 10,
+        probation_time: int = 10,
         max_len: int = 12,
 
         memory_in: float = 0.25,
         memory_out: float = 0.0001,
+        minimum_occurrence: int = 2,
         update_rate: float = 0.2,
         mini_gap: int = 2,
-        use_skip: bool = False,
+        do_skipgrams: bool = False,
         segmentation_refinement: int = 2,
 
+        n_epochs: int = 1,
         eval_interval: int = 100,
+        do_sample_corpus: bool = False
     ):
         """
         Parameters
         ----------
-        life :
+        probation_time :
             Probation length ``τ₀`` for passive forgetting. After each training
             epoch, types in the tail of the lexicon are put on probation; if a
             type is not judged useful again within ``life`` epochs, it is removed.
@@ -50,13 +79,15 @@ class LiBVocabulariser:
             Higher for larger vocabulary.
         memory_in :
             Sampling probability ``α`` for proposing a new chunk (adjacent-pair
-            or short unknown span) for memorisation. A type is appended only
-            after it has been sampled at least twice (see ``memorize``).
+            or short unknown span) for memorisation. If it is sampled
+            minimum_occurrence times, it is appended to the lexicon.
             Higher for larger vocabulary.
         memory_out :
             Forgetting ratio ``ω``. Each epoch, the last ``ω · |L|`` lexicon
-            entries (at least the final slice of the ranked list) are placed on
-            probation via ``to_dropout``.
+            entries (at least the final slice of the ranked list) are placed on probation.
+            Lower for larger vocabulary.
+        minimum_occurrence :
+            Amount of times a type needs to be sampled before adding it to the vocabulary.
             Lower for larger vocabulary.
         update_rate :
             Re-ranking rate ``Δ``. After Good/Bad evaluation, a type's ordinal
@@ -67,98 +98,131 @@ class LiBVocabulariser:
             Maximum length of an unknown span (or skip-gram fill) that may be
             proposed for memorisation. Longer gaps are ignored.
             Higher for larger vocabulary.
-        use_skip :
+        do_skipgrams :
             If True, enable the experimental skip-gram path: sample skip-gram
             slots and optionally memorise filled spans linked via
             ``memory.relationship`` (filled span → set of ``SkipGram`` frames).
             Enabling tends to grow the vocabulary (extra skip-gram types).
         """
-        self._life = life
+        self._forget_time = probation_time
         self._max_len = max_len
         self._memory_in = memory_in
         self._memory_out = memory_out
+        self._minimum_occurrence = minimum_occurrence
         self._update_rate = update_rate
         self._mini_gap = mini_gap
-        self._use_skip = use_skip
+        self._use_skip = do_skipgrams
 
+        self._n_epochs = n_epochs
         self._eval_interval = eval_interval
+        self._do_sample_corpus = do_sample_corpus
 
-        self.to_dropout = dict()
+        self.time_before_forget = dict()
         self.memory = TrieList()
         self.memory_log = []
         self.segmenter = TwoGreedySegmenter(self.memory, refinement_level=segmentation_refinement)
 
-    def initialise(self, corpus_samples: Iterable[Iterable[str]]):
-        self.to_dropout.clear()
-        for i in set([i for j in corpus_samples for i in j]):
-            self.memory.append(i)
-            self.to_dropout[i] = self._life
+    def initialise(self, spaceless_examples: Iterable[str]):
+        self.time_before_forget.clear()
+        for atom in set(atom for example in spaceless_examples for atom in example):
+            self.memory.append(atom)
+            self.time_before_forget[atom] = self._forget_time
 
-    def dropout(
-        self,
-        to_test: dict,
-        doc: str,
-        doc_covered: Sequence[int],
-        doc_loc: int,
-        reward_list: list,
-        strict: bool = False,
-    ):
-        for chunk_to_test in list(to_test.keys()):
+    def memorize(self, lexicon_candidates: Counter[VocabEntry], proposal: VocabEntry):
+        if self.memory.search(proposal):
+            return
+
+        if proposal in lexicon_candidates:
+            lexicon_candidates[proposal] -= 1
+            if lexicon_candidates[proposal] == 0:
+                lexicon_candidates.pop(proposal)
+                self.memory.append(proposal)
+        elif self._acceptableEntry(proposal):
+            lexicon_candidates[proposal] = self._minimum_occurrence
+
+    def _acceptableEntry(self, typ: VocabEntry) -> bool:
+        if isinstance(typ, str):
+            return self._acceptableString(typ)
+        else:
+            raise NotImplementedError()
+
+    def _acceptableString(self, s: str) -> bool:  # This is where you would put a preprocessor. For now we just use character classes.
+        s = unicodedata.normalize('NFC', s)  # Makes accents absorbed into letters.
+        if not s:
+            return False
+
+        seen = 0
+        for c in s:
+            if c.isalpha():
+                flag = 1
+            elif c.isdigit():
+                flag = 2
+            # elif c.isspace():  # Probably you want to allow spaces to combine with everything.
+            #     flag = 4
+            else:
+                flag = 8  # punct/symbol/other
+
+            if seen and seen != flag:
+                return False
+            seen = flag
+
+        return True
+
+    def resolve_competitions(self, to_test: dict[str,PathCompetition], doc: str, doc_index: int, reward_list: list, strict: bool=False):
+        for chunk_to_test in list(to_test):
             if strict and not self.memory.search(chunk_to_test):
                 del to_test[chunk_to_test]
                 continue
 
-            onset, end, N_unknowns, N_chunks, chunks_list_0, chunks_list = to_test[chunk_to_test]
-            while end < doc_loc:
-                chunk_next = self.memory.match(doc[end:end+self._max_len])
-                chunks_list.append(chunk_next)
+            paths = to_test[chunk_to_test]
+            while paths.end_so_far < doc_index:
+                chunk_next = self.memory.match(doc[paths.end_so_far:paths.end_so_far+self._max_len])
                 chunk_size_next = len(chunk_next)
                 if chunk_size_next > 0:
-                    end += chunk_size_next
-                    N_chunks += 1
+                    paths.end_so_far += chunk_size_next
                 else:
-                    end += 1
-                    N_unknowns += 1
-                    N_chunks += 1
+                    paths.end_so_far += 1
+                    paths.n_unknowns_on_2nd += 1
 
-            if end == doc_loc:
-                del to_test[chunk_to_test]
+                paths.n_chunks_on_2nd += 1
+                paths.chunks_on_2nd.append(chunk_next)
 
-                doc_section = doc_covered[onset: end]
+            if paths.end_so_far == doc_index:
+                N_unknowns_1 = sum(len(c) == 0 for c in paths.chunks_on_1st)
+                N_chunks_1   = sum(len(c)  > 0 for c in paths.chunks_on_1st)
+                N_unknowns_2, N_chunks_2 = paths.n_unknowns_on_2nd, paths.n_chunks_on_2nd
 
-                N_unknowns_0 = sum(len(c) == 0 for c in chunks_list_0)
-                N_chunks_0 = sum(len(c) > 0 for c in chunks_list_0)
+                alternative_wins = False
+                if N_unknowns_1 > N_unknowns_2:
+                    alternative_wins = True
+                elif N_unknowns_1 == N_unknowns_2:
+                    if N_chunks_1 > N_chunks_2:
+                        alternative_wins = True
+                    elif N_chunks_1 == N_chunks_2:
+                        alternative_wins = sum(self.memory.index_with_prior(i) for i in paths.chunks_on_1st if i in self.memory) \
+                                         > sum(self.memory.index_with_prior(i) for i in paths.chunks_on_2nd if i in self.memory)
 
-                redundant = N_unknowns_0 == N_unknowns and \
-                              ((N_chunks_0 > N_chunks) or
-                               (N_chunks_0 == N_chunks and
-                                    sum(self.memory.index_with_prior(i) for i in chunks_list_0 if i in self.memory) > sum(self.memory.index_with_prior(i) for i in chunks_list if i in self.memory)))
-
-                if N_unknowns_0 > N_unknowns or redundant:
+                if alternative_wins:
                     smaller_chunk = self.memory.match(chunk_to_test[:-1])
-                    reward_list.append((chunk_to_test, 1))
+                    reward_list.append((chunk_to_test, +1))  # + is bad, - is good.
                     reward_list.append((smaller_chunk, -1))
                 else:
                     reward_list.append((chunk_to_test, -1))
 
-                    if chunk_to_test in self.to_dropout:
-                        del self.to_dropout[chunk_to_test]
-            else:
-                to_test[chunk_to_test] = onset, end, N_unknowns, N_chunks, chunks_list_0, chunks_list
+                    if chunk_to_test in self.time_before_forget:
+                        del self.time_before_forget[chunk_to_test]
 
-    def batch_update_memory(
-        self,
-        reward_list: list,
-        used_chunks: CounterType,
-    ):
+                del to_test[chunk_to_test]
+
+    def batch_update_memory(self, reward_list: list, used_chunks: CounterType):
         to_del = []
-        for chunk_to_test in list(self.to_dropout.keys()):
-            current_life = self.to_dropout[chunk_to_test]
+        for chunk_to_test in list(self.time_before_forget.keys()):
+            current_life = self.time_before_forget[chunk_to_test]
             if current_life <= 1:
-                del self.to_dropout[chunk_to_test]
+                del self.time_before_forget[chunk_to_test]
                 to_del.append(chunk_to_test)
             else:
-                self.to_dropout[chunk_to_test] = current_life - 1
+                self.time_before_forget[chunk_to_test] = current_life - 1
 
         for c, label in reward_list:
             if c in self.memory.skipgram_frames:
@@ -174,29 +238,16 @@ class LiBVocabulariser:
 
         for ind in forget_samples:
             chunk_t = self.memory[ind]
-            if chunk_t not in self.to_dropout:
-                self.to_dropout[chunk_t] = self._life
+            if chunk_t not in self.time_before_forget:
+                self.time_before_forget[chunk_t] = self._forget_time
 
-    def memorize(
-        self,
-        to_memorize: set,
-        to_get: Optional[VocabEntry],
-        reward_list: list,
-    ):
-        if to_get and not self.memory.search(to_get):
-            if to_get in to_memorize:
-                to_memorize.remove(to_get)
-                self.memory.append(to_get)
-            else:
-                to_memorize.add(to_get)
-
-    def train_epoch(self, examples: Union[Document,Iterable[str]]) -> TrainingEpochStats:
+    def train_step(self, examples: Union[Document,Iterable[str]]) -> TrainingEpochStats:
         """
         One training pass over a document: segment, memorise, evaluate, update.
 
         Walks each sentence left to right with larger-first ``match_two``. The
         primary (longest) match is always committed as the training segmentation;
-        when a second-longest alternative exists, ``dropout`` later compares the
+        when a second-longest alternative exists, ``resolve_competitions`` later compares the
         two continuations and emits Good/Bad rewards for lexicon re-ranking.
         Adjacent chunks (and short unknown spans) may be sampled into the
         lexicon; then ``batch_update_memory`` applies passive forgetting,
@@ -207,106 +258,123 @@ class LiBVocabulariser:
         examples :
             Spaceless sentences.
         """
-        used_chunks = Counter()
+        if not self.memory:
+            raise RuntimeError("You first need to initialise the vocabulariser.")
 
-        doc_covered_all = []
-        reward_list = []
-        punish_list = []
-        to_memorize = set()
+        token_counts: CounterType[VocabEntry] = Counter()
+        M_chars_covered_doc: list[int] = []  # flat per-char coverage flags across the whole document (0 = uncovered)
+        reward_list: list[tuple[VocabEntry, int]] = []  # (type, label) with label -1 = Good / promote, +1 = Bad / demote
+        lexicon_candidates: Counter[VocabEntry] = Counter()  # proposal -> remaining sightings needed before append (two-strike gate)
         old_memory_size = len(self.memory)
 
         for concatenated_sentence in ((sentence.cat() for sentence in examples.sentences) if isinstance(examples, Document) else examples):
-            chunks_in_sent = []
-            singles = []
-            to_test = dict()
-            last_chunk = ['', 0] # 0 unknown, 1 known
+            final_tokens_here: list[Chunk] = []  # committed chunk strings for this sentence (incl. single chars when OOV)
+            alternatives: dict[str, PathCompetition] = dict()
+            last_chunk     = ''
+            last_chunk_OOV = True
 
-            sent_covered = [0] * len(concatenated_sentence)
+            M_chars_covered_here = [0] * len(concatenated_sentence)  # per-char coverage in this sentence; nonzero once a known chunk covers the position
             i = 0
             while i < len(concatenated_sentence):
-                self.dropout(to_test, concatenated_sentence, sent_covered, i, reward_list)
+                self.resolve_competitions(alternatives, concatenated_sentence, i, reward_list)
 
-                chunk_2nd, chunk = self.memory.match_two(concatenated_sentence[i:i+self._max_len])
+                second_longest_prefix, longest_prefix = self.memory.match_two(concatenated_sentence[i:i+self._max_len])
 
-                for chunk_to_test in list(to_test.keys()):
-                    to_test[chunk_to_test][4].append(chunk)
+                # extend each open primary-path hypothesis with the chunk we are about to commit
+                for chunk_to_test in list(alternatives.keys()):
+                    alternatives[chunk_to_test].chunks_on_1st.append(longest_prefix)
 
-                if len(chunk) > 0:
-                    if len(last_chunk) + len(chunk) <= self._max_len and random.random() < self._memory_in:
-                        to_get = None
-                        if last_chunk[1] == 0:
-                            if 0 < len(last_chunk[0]) <= self._mini_gap:
-                                to_get = last_chunk[0]
-                        elif len(last_chunk[0] + chunk) <= self._max_len:
-                            to_get = last_chunk[0] + chunk
-                        self.memorize(to_memorize, to_get, reward_list)
+                # Did we match a known type at i?
+                if longest_prefix:
+                    if random.random() < self._memory_in:  # If yes, try to add new type to vocab.
+                        if last_chunk_OOV:
+                            if 0 < len(last_chunk) <= self._mini_gap:  # Is the OOV gap short enough to memorise?
+                                self.memorize(lexicon_candidates, last_chunk)
+                        else:
+                            proposed_new_type = last_chunk + longest_prefix
+                            if len(proposed_new_type) <= self._max_len:  # Is known+known concatenation short enough to memorise?
+                                self.memorize(lexicon_candidates, proposed_new_type)
 
-                    if len(chunk) > 1 and len(chunk_2nd) > 0:
-                        to_test[chunk] = [i, i + len(chunk_2nd), 0, 1, [chunk], [chunk_2nd]] # chunk_to_test, start position, current position, number of unknowns, number of chunks
-                    elif chunk in self.to_dropout:
-                        del self.to_dropout[chunk]
+                    # Open a Good/Bad contest (longest vs second-longest), else maybe rescue from probation
+                    if second_longest_prefix:
+                        alternatives[longest_prefix] = PathCompetition(
+                            onset=i,
+                            end_so_far=i + len(second_longest_prefix),
+                            n_unknowns_on_2nd=0,
+                            n_chunks_on_2nd=1,
+                            chunks_on_1st=[longest_prefix],
+                            chunks_on_2nd=[second_longest_prefix]
+                        )
+                    elif longest_prefix in self.time_before_forget:
+                        del self.time_before_forget[longest_prefix]
 
-                    chunk_s = len(chunk)
-                    sent_covered[i: i + chunk_s] = [sent_covered[i-1] + 1] * chunk_s
-                    chunks_in_sent.append(chunk)
-                    i += chunk_s
-                    last_chunk = [chunk, 1]
-                    used_chunks[chunk] += 1
-                else:
-                    if last_chunk[1] == 1:
-                        last_chunk = ['', 0]
-                    last_chunk[0] += concatenated_sentence[i]
-                    chunks_in_sent.append(concatenated_sentence[i])
+                    # always commit the longest match (training; segmenter may choose otherwise) TODO: This is probably bad.
+                    n_chars = len(longest_prefix)
+                    M_chars_covered_here[i:i+n_chars] = [M_chars_covered_here[i-1] + 1] * n_chars
+                    final_tokens_here.append(longest_prefix)
+                    i += n_chars
+                    last_chunk = longest_prefix
+                    last_chunk_OOV = False
+                    token_counts[longest_prefix] += 1
+                else:  # No lexicon match: consume one character as OOV
+                    if not last_chunk_OOV:
+                        last_chunk = ''
+                        last_chunk_OOV = True
+                    last_chunk += concatenated_sentence[i]
+                    final_tokens_here.append(concatenated_sentence[i])
                     i += 1
 
+            # optional skip-gram path (experimental; off by default)
             if self._use_skip:
-                chunks_in_sent = [Bound.BOS] + chunks_in_sent + [Bound.EOS]
-                for a, b in zip(chunks_in_sent[:-2], chunks_in_sent[2:]):
+                final_tokens_here = [Bound.BOS] + final_tokens_here + [Bound.EOS]
+                for a, b in zip(final_tokens_here[:-2], final_tokens_here[2:]):
+                    # decide: sample a SkipGram(left, right) frame?
                     if random.random() < (self._memory_in * self._memory_in):
-                        self.memorize(to_memorize, SkipGram(a, b), reward_list)
+                        self.memorize(lexicon_candidates, SkipGram(a, b))
 
                 while True:
-                    skip_gram, skip, chunks_in_sent = self.memory.skipgram_match(chunks_in_sent)
+                    skip_gram, skip, final_tokens_here = self.memory.skipgram_match(final_tokens_here)
+                    # decide: found a multi-chunk fill under an existing skip-gram frame?
                     if skip is not None and len(skip) > 1:
                         skip = ''.join(skip)
+                        # decide: is the fill short enough and sampled for memorisation?
                         if len(skip) <= self._mini_gap and random.random() < self._memory_in:
                             frame = SkipGram(skip_gram[0], skip_gram[1])
                             self.memory.skipgram_frames.setdefault(skip, set()).add(frame)
+                            # decide: fill not yet in lexicon?
                             if not self.memory.search(skip):
                                 self.memory.append(skip)
-                    if chunks_in_sent == None:
+                    if final_tokens_here == None:
                         break
 
-            doc_covered_all += sent_covered
+            M_chars_covered_doc += M_chars_covered_here
 
         in_count = len(self.memory) - old_memory_size
+        self.batch_update_memory(reward_list, token_counts)
 
-        self.batch_update_memory(reward_list, used_chunks)
-
-        covered_rate = 1 - sum(i==0 for i in doc_covered_all) / len(doc_covered_all)
-        chunk_groups = [(key, len(list(group))) for key, group in groupby(doc_covered_all)]
+        chunk_groups = [(key, len(list(group))) for key, group in groupby(M_chars_covered_doc)]  # runs of equal coverage ids; each known-chunk run counts as 1 group, each OOV char as its own
         chunk_in_use = sum([g_len if key==0 else 1 for key, g_len in chunk_groups])
-
-        mem_usage = len(set(used_chunks.keys()) & set(self.memory)) / len(self.memory)
-
         return TrainingEpochStats(
-            covered_rate=covered_rate,
-            average_chunk_length=len(doc_covered_all) / chunk_in_use,
-            memory_usage=mem_usage,
+            covered_rate=1 - sum(i==0 for i in M_chars_covered_doc) / len(M_chars_covered_doc),
+            average_chunk_length=len(M_chars_covered_doc) / chunk_in_use,
+            memory_usage=len(set(token_counts.keys()) & set(self.memory)) / len(self.memory),
             in_count=in_count
         )
 
     ####################################################################################################################
 
-    def run(self, epochs: int, corpus_train: Corpus, corpus_test: Corpus):
-        for epoch_id in range(epochs):
-            document = corpus_train.sample()
-            stats = self.train_epoch(document)
-            if epoch_id % self._eval_interval == 0:  # Every 100 epochs, you run validation-set statistics.
-                self.eval_epoch(corpus_test, latest_epoch=epoch_id, latest_stats=stats)
+    def run(self, corpus_train: Corpus, corpus_test: Corpus):
+        n_documents = len(corpus_train.documents)
+        for epoch_id in range(self._n_epochs):
+            for i in range(n_documents):
+                document = corpus_train.documents[i] if not self._do_sample_corpus else corpus_train.sample()
+
+                results = self.train_step(document)
+                if i % self._eval_interval == 0:  # Every 100 steps, you run validation-set statistics.
+                    self.eval_epoch(corpus_test, latest_epoch=epoch_id + i/n_documents, latest_train_results=results)
 
     def eval_epoch(self, corpus_test: Corpus,
-                   latest_epoch: int, latest_stats: TrainingEpochStats):
+                   latest_epoch: float, latest_train_results: TrainingEpochStats):
             @dataclass
             class ValidationStats:
                 mem_length: list[int]
@@ -321,8 +389,8 @@ class LiBVocabulariser:
             # TODO: Makes very little sense to have lists for these but never actually append more than one measurement.
             stats = ValidationStats([], [], [], [], [], [], [])
             stats.mem_length.append(len(self.memory))
-            stats.covered.append(latest_stats.covered_rate)
-            stats.mem_usage.append(latest_stats.memory_usage)
+            stats.covered.append(latest_train_results.covered_rate)
+            stats.mem_usage.append(latest_train_results.memory_usage)
 
             for document in corpus_test.documents:
                 chunk_pos_0 = set(accumulate([len(pretoken) for sentence in document.sentences for pretoken in sentence.words]))

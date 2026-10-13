@@ -311,7 +311,7 @@ class TrieList:
         else:
             return words[-2]
 
-    def match_two(self, string: str) -> list[str]:
+    def match_two(self, string: str) -> tuple[str,str]:
         cur_node = self.root
         words = ['','']
         for c in string:
@@ -320,12 +320,12 @@ class TrieList:
                     if len(words) > 1:
                         return words[-2:]
                     else:
-                        return ['',words[-1]]
+                        return ('', words[-1])
                 else:
                     if len(words) > 2:
                         return words[-3:-1]
                     else:
-                        return ['','']
+                        return ('', '')
 
             if -1 in cur_node:
                 words.append(words[-1]) # we know there was a chunk, now we make a new hypothesis
@@ -338,8 +338,8 @@ class TrieList:
         elif len(words) > 2:
             return words[-3:-1]
         else:
-            return ['','']
-        
+            return ('', '')
+
     def match_2nd(self, string: str) -> str:
         cur_node = self.root
         words = ['','']
