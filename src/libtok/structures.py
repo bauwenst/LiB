@@ -311,7 +311,7 @@ class TrieList:
         else:
             return words[-2]
 
-    def match_two(self, string: str) -> tuple[str,str]:
+    def match_two(self, string: str) -> tuple[str,str]:  # second-longest and longest.
         cur_node = self.root
         words = ['','']
         for c in string:

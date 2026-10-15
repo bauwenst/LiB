@@ -12,6 +12,15 @@ from .segmentation import TwoGreedySegmenter
 from .structures import Bound, Chunk, Corpus, Document, SkipGram, TrieList, VocabEntry
 
 
+class SegmentationPath:  # Not a dataclass so that we can hash/compare it normally.
+    def __init__(self, first_token: str, offset: int, n_tokens: int, n_unks: int, sum_ordinals: int):
+        self.first_token  = first_token
+        self.offset       = offset
+        self.n_tokens     = n_tokens
+        self.n_unks       = n_unks
+        self.sum_ordinals = sum_ordinals
+
+
 @dataclass
 class PathCompetition:
     onset: int
@@ -39,13 +48,14 @@ class LiBVocabulariser:
         - Customisable minimum occurrences.
         - Filter that forbids types from entering the lexicon that are mixes of letters/numbers/punctuation.
         - Corpus sampling controls (stochasticity, epochs)
+        - Deeper than 1 non-greedy choice to find the next token in training.
 
     Also fixes multiple bugs that were present in upstream, including:
         - Whether an UNK string was lexicalised used to be prevented by adding to it a different string's length: https://github.com/ray306/LiB/blob/388248f7306492dcddd67425ea70185c23753986/model.py#L139
         - In that same check, the actual string's length was being miscomputed as the length of the tuple containing it: https://github.com/ray306/LiB/blob/388248f7306492dcddd67425ea70185c23753986/model.py#L139
         - Path competitions were not resolved if they existed at the end of a sentence.
         - In the segmenter, refinement used to stop earlier than necessary due to a check resulting in a false negative.
-        - Soon: path competition wins were not used to segment a document, but rather the greedy segmentation was always used.
+        - Path competition wins were not used to segment a document; the greedy segmentation was always used.
     """
 
     def __init__(
@@ -60,6 +70,7 @@ class LiBVocabulariser:
         mini_gap: int = 2,
         do_skipgrams: bool = False,
         segmentation_refinement: int = 2,
+        lookahead_depth: int = 1,  # Original implementation used 1 to decide rewards although it used 0 to decide context of those rewards. We use the same for both so that rewards are based on high-quality context.
 
         n_epochs: int = 1,
         eval_interval: int = 100,
@@ -105,8 +116,9 @@ class LiBVocabulariser:
             Enabling tends to grow the vocabulary (extra skip-gram types).
         """
         self._forget_time = probation_time
-        self._max_len = max_len
-        self._memory_in = memory_in
+        self._max_len    = max_len
+        self._lookahead  = lookahead_depth
+        self._memory_in  = memory_in
         self._memory_out = memory_out
         self._minimum_occurrence = minimum_occurrence
         self._update_rate = update_rate
@@ -193,22 +205,31 @@ class LiBVocabulariser:
             if chunk_t not in self.time_before_forget:
                 self.time_before_forget[chunk_t] = self._forget_time
 
+    def generate_path_prefixes(self, text: str, forks_remaining: int) -> list[list[str]]:
+        if not text or forks_remaining <= 0:
+            return [[]]
+
+        matches = [token for token in self.memory.match_two(text[0:self._max_len]) if token]
+        if not matches:
+            matches.append("")
+        elif len(matches) == 2:
+            forks_remaining -= 1
+
+        paths = []
+        for token in matches:
+            for follow_up_path in self.generate_path_prefixes(text[max(1,len(token)):], forks_remaining=forks_remaining):
+                paths.append([token] + follow_up_path)
+        return paths
+
+    def pathToScore(self, path: SegmentationPath) -> tuple[int,int,int]:
+        """Lower is more desirable."""
+        return path.n_unks, path.n_tokens, path.sum_ordinals
+
     def train_step(self, examples: Union[Document,Iterable[str]]) -> TrainingEpochStats:
         """
         One training pass over a document: segment, memorise, evaluate, update.
 
-        Walks each sentence left to right with larger-first ``match_two``. The
-        primary (longest) match is always committed as the training segmentation;
-        when a second-longest alternative exists, ``resolve_competitions`` later compares the
-        two continuations and emits Good/Bad rewards for lexicon re-ranking.
-        Adjacent chunks (and short unknown spans) may be sampled into the
-        lexicon; then ``batch_update_memory`` applies passive forgetting,
-        re-ranking, and active deletion.
-
-        Parameters
-        ----------
-        examples :
-            Spaceless sentences.
+        :param examples: Spaceless sentences.
         """
         if not self.memory:
             raise RuntimeError("You first need to initialise the vocabulariser.")
@@ -221,62 +242,95 @@ class LiBVocabulariser:
 
         for concatenated_sentence in ((sentence.cat() for sentence in examples.sentences) if isinstance(examples, Document) else examples):
             tokens: list[Chunk] = []  # committed chunk strings for this sentence (incl. single chars when OOV)
-            alternatives: dict[str, PathCompetition] = dict()
             last_chunk     = ''
             last_chunk_OOV = True
 
             M_chars_covered_here = [0] * len(concatenated_sentence)  # per-char coverage in this sentence; nonzero once a known chunk covers the position
             i = 0
             while i < len(concatenated_sentence):
-                self.resolve_competitions(alternatives, concatenated_sentence, i, reward_list)
-
                 second_longest_prefix, longest_prefix = self.memory.match_two(concatenated_sentence[i:i+self._max_len])
-
-                # extend each open primary-path hypothesis with the chunk we are about to commit
-                for alternative_paths in alternatives.values():
-                    alternative_paths.chunks_on_1st.append(longest_prefix)
-
-                # Did we match a known type at i?
-                if longest_prefix:
-                    if random.random() < self._memory_in:  # If yes, try to add new type to vocab.
-                        if last_chunk_OOV:
-                            if 0 < len(last_chunk) <= self._mini_gap:  # Is the OOV gap short enough to memorise?
-                                self.memorize(lexicon_candidates, last_chunk)
-                        else:
-                            proposed_new_type = last_chunk + longest_prefix
-                            if len(proposed_new_type) <= self._max_len:  # Is known+known concatenation short enough to memorise?
-                                self.memorize(lexicon_candidates, proposed_new_type)
-
-                    # Open a Good/Bad contest (longest vs second-longest), else maybe rescue from probation
-                    if second_longest_prefix:
-                        alternatives[longest_prefix] = PathCompetition(
-                            onset=i,
-                            end_so_far=i + len(second_longest_prefix),
-                            n_unknowns_on_2nd=0,
-                            n_chunks_on_2nd=1,
-                            chunks_on_1st=[longest_prefix],
-                            chunks_on_2nd=[second_longest_prefix]
-                        )
-                    elif longest_prefix in self.time_before_forget:
-                        del self.time_before_forget[longest_prefix]
-
-                    # always commit the longest match (training; segmenter may choose otherwise) TODO: This is probably bad.
-                    n_chars = len(longest_prefix)
-                    M_chars_covered_here[i:i+n_chars] = [M_chars_covered_here[i-1] + 1] * n_chars
-                    i += n_chars
-                    last_chunk     = longest_prefix
-                    last_chunk_OOV = False
-                    tokens.append(longest_prefix)
-                    token_counts[longest_prefix] += 1
-                else:  # No lexicon match: consume one character as OOV
+                if not longest_prefix:  # UNK step.
                     if not last_chunk_OOV:
                         last_chunk = ''
                         last_chunk_OOV = True
                     last_chunk += concatenated_sentence[i]
                     tokens.append(concatenated_sentence[i])
                     i += 1
+                    continue
+
+                # Otherwise, there is at least one continuation, and we will find which one it is.
+                if not second_longest_prefix:  # Greedy step
+                    next_token = longest_prefix
+                else:
+                    paths = {
+                        SegmentationPath(
+                            first_token=path[0],
+                            offset=sum(map(lambda token: max(1,len(token)), path)),
+                            n_tokens=len(path) - path.count(""),
+                            n_unks=path.count(""),
+                            sum_ordinals=sum(self.memory.index_with_prior(token, nothing=0) for token in path)
+                        )
+                        for path in self.generate_path_prefixes(concatenated_sentence[i:], forks_remaining=self._lookahead)
+                    }
+
+                    # Next, we extend the shortest path greedily until it matches one of the other paths. Then we make them do a contest. Eventually one path remains.
+                    while len(paths) > 1:
+                        shortest_path_offset = min(map(lambda path: path.offset, paths))
+                        contest = {path for path in paths if path.offset == shortest_path_offset}
+                        best_shortest_path = min(contest, key=self.pathToScore)
+                        for path in contest:
+                            if path != best_shortest_path:
+                                paths.remove(path)
+
+                        if len(paths) == 1:
+                            break
+
+                        # Extend path by one greedy step.
+                        i_hypothetical = i + shortest_path_offset
+                        longest_prefix_hypothetical = self.memory.match(concatenated_sentence[i_hypothetical:i_hypothetical+self._max_len])
+                        if not longest_prefix_hypothetical:  # UNK
+                            best_shortest_path.offset += 1
+                            best_shortest_path.n_unks += 1
+                        else:  # Greedy path
+                            best_shortest_path.offset       += len(longest_prefix_hypothetical)
+                            best_shortest_path.n_tokens     += 1
+                            best_shortest_path.sum_ordinals += self.memory.index_with_prior(longest_prefix_hypothetical)
+
+                    best_path = paths.pop()
+                    next_token = best_path.first_token
+
+                    if next_token == second_longest_prefix:
+                        reward_list.append((longest_prefix,        +1))  # + is bad, - is good.
+                        reward_list.append((second_longest_prefix, -1))
+                    elif next_token == longest_prefix:
+                        reward_list.append((longest_prefix, -1))
+                    else:
+                        raise RuntimeError()
+
+                # Try to add a new type to the vocab since we know that a real token was found.
+                if random.random() < self._memory_in:
+                    if last_chunk_OOV:  # Previous token didn't exist, so we can't merge with next token.
+                        if 0 < len(last_chunk) <= self._mini_gap:  # Is the OOV gap short enough to memorise?
+                            self.memorize(lexicon_candidates, last_chunk)
+                    else:  # We can merge with next token.
+                        proposed_new_type = last_chunk + next_token
+                        if len(proposed_new_type) <= self._max_len:  # Is known+known concatenation short enough to memorise?
+                            self.memorize(lexicon_candidates, proposed_new_type)
+
+                # Take the chosen token out of probation
+                if next_token in self.time_before_forget:
+                    del self.time_before_forget[next_token]
+
+                # Finally, extend with this next token.
+                n_chars = len(next_token)
+                M_chars_covered_here[i:i+n_chars] = [M_chars_covered_here[i-1] + 1] * n_chars
+                i += n_chars
+
+                last_chunk     = next_token
+                last_chunk_OOV = False
+                tokens.append(next_token)
+                token_counts[next_token] += 1
             # End of the sentence is reached.
-            self.resolve_competitions(alternatives, concatenated_sentence, len(concatenated_sentence), reward_list)  # Fix that wasn't done originally.
 
             # optional skip-gram path (experimental; off by default)
             if self._use_skip:
@@ -314,52 +368,6 @@ class LiBVocabulariser:
             memory_usage=len(set(token_counts) & set(self.memory)) / len(self.memory),
             in_count=in_count
         )
-
-    def resolve_competitions(self, to_test: dict[str,PathCompetition], text: str, doc_index: int, reward_list: list, strict: bool=False):
-        for chunk_to_test in list(to_test):
-            if strict and not self.memory.search(chunk_to_test):
-                del to_test[chunk_to_test]
-                continue
-
-            paths = to_test[chunk_to_test]
-            while paths.end_so_far < doc_index:
-                chunk_next = self.memory.match(text[paths.end_so_far:paths.end_so_far + self._max_len])
-                chunk_size_next = len(chunk_next)
-                if chunk_size_next > 0:
-                    paths.end_so_far += chunk_size_next
-                else:
-                    paths.end_so_far += 1
-                    paths.n_unknowns_on_2nd += 1
-
-                paths.n_chunks_on_2nd += 1
-                paths.chunks_on_2nd.append(chunk_next)
-
-            if paths.end_so_far == doc_index:
-                N_unknowns_1 = sum(len(c) == 0 for c in paths.chunks_on_1st)
-                N_chunks_1   = sum(len(c)  > 0 for c in paths.chunks_on_1st)
-                N_unknowns_2, N_chunks_2 = paths.n_unknowns_on_2nd, paths.n_chunks_on_2nd
-
-                alternative_wins = False
-                if N_unknowns_1 > N_unknowns_2:
-                    alternative_wins = True
-                elif N_unknowns_1 == N_unknowns_2:
-                    if N_chunks_1 > N_chunks_2:
-                        alternative_wins = True
-                    elif N_chunks_1 == N_chunks_2:
-                        alternative_wins = sum(self.memory.index_with_prior(i) for i in paths.chunks_on_1st if i in self.memory) \
-                                         > sum(self.memory.index_with_prior(i) for i in paths.chunks_on_2nd if i in self.memory)
-
-                if alternative_wins:
-                    smaller_chunk = self.memory.match(chunk_to_test[:-1])
-                    reward_list.append((chunk_to_test, +1))  # + is bad, - is good.
-                    reward_list.append((smaller_chunk, -1))
-                else:
-                    reward_list.append((chunk_to_test, -1))
-
-                    if chunk_to_test in self.time_before_forget:
-                        del self.time_before_forget[chunk_to_test]
-
-                del to_test[chunk_to_test]
 
     ####################################################################################################################
 
